@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+dist
+.hallmark
+.DS_Store
+*.log
+docs
+data
+backend/.gradle
+backend/build
+backend/data
