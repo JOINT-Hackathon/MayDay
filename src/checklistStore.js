@@ -31,7 +31,7 @@ export function checklistFromRecord(record) {
 export function readChecklistItems(records, taskTypes) {
   try {
     const saved = window.localStorage.getItem(CHECKLIST_STORAGE_KEY);
-    if (saved === null) return { items: records.map(checklistFromRecord), error: '', readError: false };
+    if (saved === null) return { items: records.filter((record) => record.checklist?.trim() && (!Array.isArray(record.savedTracks) || record.savedTracks.includes('tasks'))).map(checklistFromRecord), error: '', readError: false };
     const parsed = JSON.parse(saved);
     if (!Array.isArray(parsed)) throw new Error('invalid checklist');
     return {

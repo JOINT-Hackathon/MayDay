@@ -34,6 +34,12 @@ const EMOTION_STEPS = [
   },
 ];
 
+const EMOTION_FOLLOWUPS = [
+  { key: 'emotionFocus', track: '마음 더 들여다보기', required: false, question: { mistake: '지금 이야기한 감정에서 가장 마음에 남는 부분은 무엇인가요? 떠오르는 장면이나 생각 하나만 들려주세요.' }, placeholder: '예: 사람들이 나를 믿지 못할까 봐 계속 신경 쓰여요.' },
+  { key: 'emotionNeed', track: '내 마음 돌보기', required: false, question: { mistake: '그 마음이 조금 편해지려면 지금 무엇이 필요할까요? 해결책이 아니어도 괜찮아요.' }, placeholder: '예: 잘하려고 했다는 것을 누군가 알아주면 좋겠어요.' },
+  { key: 'emotionClosing', track: '내 말로 정리하기', required: false, question: { mistake: '이야기를 나눈 지금, 내 마음을 어떻게 정리하고 싶나요? 나에게 해주고 싶은 말을 남겨도 좋아요.' }, placeholder: '예: 아직 걱정되지만 한 번의 실수로 나를 판단하지 않으려고 해요.' },
+];
+
 const TASK_STEPS = [
   {
     key: 'unknown',
@@ -89,6 +95,7 @@ const START_STEP = {
 };
 
 const STEP_LABELS = {
+  emotionFocus: '마음에 남는 부분', emotionNeed: '지금 필요한 것', emotionClosing: '나에게 남기는 말',
   rawText: '처음 적은 상황',
   facts: '직접 확인한 사실',
   interpretation: '내 해석',
@@ -103,38 +110,42 @@ function questionFor(step, mode) {
   return step.question[mode] || step.question.mistake;
 }
 
-export default function GuidedChat({ mode = 'mistake', initialText = '', onComplete, onCancel }) {
+export default function GuidedChat({ mode = 'mistake', initialText = '', feelingsOnly = false, initialAnswers = {}, onFeelingsStart, onComplete, onCancel }) {
   const [phase, setPhase] = useState(initialText.trim() ? 'choice' : 'start');
   const [order, setOrder] = useState(null);
   const [completedAnswers, setCompletedAnswers] = useState(null);
   const [index, setIndex] = useState(0);
-  const [answers, setAnswers] = useState(() => initialText.trim() ? { rawText: initialText.trim() } : {});
+  const [answers, setAnswers] = useState(() => initialText.trim() ? { ...initialAnswers, rawText: initialText.trim() } : {});
   const [input, setInput] = useState('');
   const [editingKey, setEditingKey] = useState(null);
   const [error, setError] = useState('');
-  const [aiAvailable, setAiAvailable] = useState(false);
+  const [aiAvailable, setAiAvailable] = useState(null);
   const [aiConsent, setAiConsent] = useState(false);
   const [adaptiveMode, setAdaptiveMode] = useState(false);
   const [adaptiveLoading, setAdaptiveLoading] = useState(false);
   const [adaptiveQuestion, setAdaptiveQuestion] = useState('');
   const [adaptiveTurns, setAdaptiveTurns] = useState([]);
   const [adaptiveSummary, setAdaptiveSummary] = useState({});
+  const [failedRequest, setFailedRequest] = useState(null);
+  const [closingMessage, setClosingMessage] = useState('');
+  const requestRef = useRef(null);
   const transcriptRef = useRef(null);
   const inputRef = useRef(null);
   const activeRef = useRef(true);
 
   const steps = useMemo(() => {
+    if (feelingsOnly) return [...EMOTION_STEPS, ...EMOTION_FOLLOWUPS];
     return order === 'tasks-first'
       ? [...TASK_STEPS, ...EMOTION_STEPS]
       : [...EMOTION_STEPS, ...TASK_STEPS];
-  }, [order]);
+  }, [order, feelingsOnly]);
   const currentStep = phase === 'start' ? START_STEP : phase === 'questions' ? steps[index] : null;
   const answerStep = editingKey
     ? [START_STEP, ...steps].find((step) => step.key === editingKey)
     : currentStep;
   const answeredSteps = phase === 'start' ? [] : phase === 'result-choice' && !adaptiveMode ? steps : steps.slice(0, index);
   const progressCount = phase === 'start' ? 0 : phase === 'choice' ? 1 : 1 + index;
-  const totalQuestions = 1 + EMOTION_STEPS.length + TASK_STEPS.length;
+  const totalQuestions = 1 + steps.length;
 
   useEffect(() => {
     let active = true;
@@ -147,7 +158,7 @@ export default function GuidedChat({ mode = 'mistake', initialText = '', onCompl
 
   useEffect(() => {
     activeRef.current = true;
-    return () => { activeRef.current = false; };
+    return () => { activeRef.current = false; requestRef.current?.abort(); };
   }, []);
 
   useEffect(() => {
@@ -166,6 +177,7 @@ export default function GuidedChat({ mode = 'mistake', initialText = '', onCompl
 
   function finish(nextAnswers) {
     setCompletedAnswers({
+      ...(feelingsOnly ? { emotionFocus: nextAnswers.emotionFocus || '', emotionNeed: nextAnswers.emotionNeed || '', emotionClosing: nextAnswers.emotionClosing || '' } : {}),
       rawText: nextAnswers.rawText || '',
       facts: nextAnswers.facts || '',
       interpretation: nextAnswers.interpretation || '',
@@ -178,8 +190,13 @@ export default function GuidedChat({ mode = 'mistake', initialText = '', onCompl
     setPhase('result-choice');
   }
 
-  async function requestAdaptive(turns, selectedOrder) {
+  async function requestAdaptive(turns, selectedOrder, finishNow = false) {
+    if (requestRef.current) return;
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 50000);
     setAdaptiveLoading(true);
+    setFailedRequest(null);
     setError('');
     try {
       const response = await fetch('/api/chat-turn', {
@@ -188,48 +205,52 @@ export default function GuidedChat({ mode = 'mistake', initialText = '', onCompl
         body: JSON.stringify({
           mode,
           consent: true,
-          preferredTrack: selectedOrder === 'tasks-first' ? 'tasks' : null,
+          preferredTrack: feelingsOnly ? 'feelings' : selectedOrder === 'tasks-first' ? 'tasks' : null,
+          finishNow,
           turns,
         }),
-        signal: AbortSignal.timeout(50000),
+        signal: controller.signal,
       });
       const result = await response.json();
       if (!activeRef.current) return;
       if (!response.ok) throw new Error(result.error || '질문을 불러오지 못했습니다.');
       setAdaptiveSummary(result.summary || {});
       if (result.done) {
-        setCompletedAnswers({ rawText: answers.rawText || '', ...result.summary });
+        setClosingMessage(result.empathy || '');
+        setCompletedAnswers({ rawText: answers.rawText || '', ...result.summary, source: 'ai' });
         setPhase('result-choice');
       } else if (typeof result.question === 'string' && result.question.trim()) {
-        setAdaptiveQuestion(result.question.trim());
+        setAdaptiveQuestion([result.empathy, result.question.trim()].filter(Boolean).join('\n\n'));
       } else {
         throw new Error('다음 질문이 비어 있습니다.');
       }
-    } catch {
+    } catch (error) {
       if (!activeRef.current) return;
-      setAdaptiveMode(false);
-      setPhase('questions');
-      setIndex(0);
-      setAnswers((current) => ({ ...current, ...adaptiveSummary }));
-      setError('AI 질문 연결에 실패했습니다. 정해진 가이드 질문으로 이어갈 수 있어요.');
+      setFailedRequest({ turns, selectedOrder, finishNow });
+      setError(error.name === 'AbortError' ? '응답이 지연되고 있어요. 답변은 남아 있으니 다시 시도해 주세요.' : error.message || 'AI 연결에 실패했어요. 답변은 그대로 남아 있어요.');
     } finally {
+      clearTimeout(timeout);
+      requestRef.current = null;
       if (activeRef.current) setAdaptiveLoading(false);
     }
+  }
+
+  function sendAdaptive(finishNow = false) {
+    if (adaptiveLoading || failedRequest || requestRef.current) return;
+    const value = input.trim();
+    if (!value && !finishNow) { setError('답변을 적어 주세요.'); return; }
+    const nextTurns = value ? [...adaptiveTurns, { role: 'assistant', content: adaptiveQuestion }, { role: 'user', content: value }] : adaptiveTurns;
+    setAdaptiveTurns(nextTurns);
+    setAdaptiveQuestion('');
+    setInput('');
+    requestAdaptive(nextTurns, order, finishNow || (feelingsOnly && nextTurns.length >= 78));
   }
 
   function submitAnswer(event) {
     event.preventDefault();
     if (adaptiveLoading) return;
     if (adaptiveMode && phase === 'adaptive' && !editingKey) {
-      const value = input.trim();
-      if (!value) {
-        setError('답변을 적어 주세요.');
-        return;
-      }
-      const nextTurns = [...adaptiveTurns, { role: 'assistant', content: adaptiveQuestion }, { role: 'user', content: value }];
-      setAdaptiveTurns(nextTurns);
-      setInput('');
-      requestAdaptive(nextTurns, order);
+      sendAdaptive();
       return;
     }
     if (!answerStep) return;
@@ -269,8 +290,13 @@ export default function GuidedChat({ mode = 'mistake', initialText = '', onCompl
     if (aiAvailable && aiConsent) {
       const initialTurns = [
         { role: 'assistant', content: questionFor(START_STEP, mode) },
-        { role: 'user', content: answers.rawText || '' },
+        { role: 'user', content: (answers.rawText || '').slice(0, 1000) },
       ];
+      if (feelingsOnly) {
+        for (const key of ['interpretation', 'feeling', 'emotionFocus', 'emotionNeed', 'emotionClosing']) {
+          if (typeof answers[key] === 'string' && answers[key].trim()) initialTurns.push({ role: 'user', content: `${STEP_LABELS[key]}: ${answers[key]}`.slice(0, 1000) });
+        }
+      }
       setAdaptiveMode(true);
       setAdaptiveTurns(initialTurns);
       setAdaptiveQuestion('');
@@ -301,13 +327,13 @@ export default function GuidedChat({ mode = 'mistake', initialText = '', onCompl
       <header className="chat-header">
         <div>
           <p className="eyebrow">질문으로 경험 구체화하기</p>
-          <h1 id="chat-title">{mode === 'mistake' ? '실수를 함께 정리해 볼까요?' : '지적받은 경험을 함께 정리해 볼까요?'}</h1>
-          <p>한 번에 한 질문씩 답해 주세요. {aiAvailable ? '동의하면 AI가 다음 질문을 고릅니다. 사실 여부는 사용자가 확인합니다.' : 'AI 키가 없으면 준비된 가이드 질문으로 진행합니다.'}</p>
+          <h1 id="chat-title">{feelingsOnly ? '지금 마음을 조금 더 이야기해 볼까요?' : mode === 'mistake' ? '실수를 함께 정리해 볼까요?' : '지적받은 경험을 함께 정리해 볼까요?'}</h1>
+          <p>한 번에 한 질문씩 답해 주세요. {feelingsOnly ? 'AI가 이야기에 귀 기울이며 공감과 질문을 이어가요. 원할 때 여기까지 정리할 수 있어요.' : aiAvailable ? '동의하면 AI가 다음 질문을 고릅니다. 사실 여부는 사용자가 확인합니다.' : 'AI 키가 없으면 준비된 가이드 질문으로 진행합니다.'}</p>
         </div>
         <button type="button" className="button-secondary" onClick={onCancel}>나가기</button>
       </header>
       <div className="chat-progress">
-        {phase === 'result-choice' ? <div className="chat-progress-copy"><strong>대화 완료</strong><span>먼저 볼 결과를 선택해 주세요.</span></div> : adaptiveMode ? <div className="chat-progress-copy"><strong>맞춤 질문 진행 중</strong><span>사실과 실행할 행동, 후속 보고가 구체화될 때까지 함께 질문합니다.</span></div> : <>
+        {phase === 'result-choice' ? <div className="chat-progress-copy"><strong>대화 완료</strong><span>먼저 볼 결과를 선택해 주세요.</span></div> : adaptiveMode ? <div className="chat-progress-copy"><strong>맞춤 질문 진행 중</strong><span>{feelingsOnly ? '내 답변에 맞춰 마음을 함께 들여다봐요.' : '사실과 실행할 행동, 후속 보고가 구체화될 때까지 함께 질문합니다.'}</span></div> : <>
           <div className="chat-progress-copy"><strong>{phase === 'choice' ? '첫 답변 완료' : `질문 ${Math.min(progressCount + 1, totalQuestions)} / ${totalQuestions}`}</strong><span>{phase === 'choice' ? '대화 시작 준비' : phase === 'start' ? '경험 들려주기' : currentStep?.track}</span></div>
           <div className="chat-progress-track" role="progressbar" aria-label="답변 완료" aria-valuemin="0" aria-valuemax={totalQuestions} aria-valuenow={progressCount}>
             <span style={{ width: `${progressCount / totalQuestions * 100}%` }} />
@@ -329,7 +355,7 @@ export default function GuidedChat({ mode = 'mistake', initialText = '', onCompl
         )}
         {phase === 'result-choice' && (
           <>
-            <div className="chat-message chat-assistant"><div className="chat-bubble"><small>정리 완료</small><p>이야기를 모두 정리했어요. 어떤 결과부터 살펴볼까요? 두 트랙 모두 남아 있어요.</p></div></div>
+            <div className="chat-message chat-assistant"><div className="chat-bubble"><small>정리 완료</small><p>{closingMessage || (feelingsOnly ? '이야기해 줘서 고마워요. 내 말로 정리한 마음을 확인하고 저장해 주세요.' : '이야기를 모두 정리했어요. 어떤 결과부터 살펴볼까요? 두 트랙 모두 남아 있어요.')}</p></div></div>
 
           </>
         )}
@@ -337,25 +363,30 @@ export default function GuidedChat({ mode = 'mistake', initialText = '', onCompl
 
       {phase === 'choice' && !editingKey ? (
         <div className="chat-actions" role="group" aria-label="대화 시작">
-          {aiAvailable && <label className="consent-label"><input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />동의하면 지금까지 적은 내용과 이후 답변을 Anthropic의 AI에 보내 맞춤 질문을 받습니다. 동의하지 않으면 준비된 가이드 질문으로 진행합니다.</label>}
-          <button className="chat-choice" type="button" onClick={() => chooseOrder(null)}><strong>이어서 이야기하기</strong><span>질문에 답하고 마지막에 보고 싶은 결과를 골라요</span></button>
+          {aiAvailable === null && <p role="status">AI 연결 확인 중…</p>}
+          {aiAvailable === false && <p role="status">지금은 AI 대화를 연결할 수 없어요. 가이드 질문으로 정리할 수 있습니다.</p>}
+          {aiAvailable && <label className="consent-label"><input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />동의하면 현재 상황과 이전 감정 기록, 이후 답변을 Anthropic의 AI에 보내 맞춤 질문을 받습니다. 동의하지 않으면 준비된 가이드 질문으로 진행합니다.</label>}
+          {!feelingsOnly && onFeelingsStart && <button className="chat-choice" type="button" onClick={() => onFeelingsStart(answers.rawText)}><strong>감정부터 이야기하기</strong><span>할 일을 정하지 않아도 마음만 차근차근 정리할 수 있어요</span></button>}
+          <button className="chat-choice" type="button" onClick={() => chooseOrder(null)} disabled={aiAvailable === null}><strong>{feelingsOnly ? aiAvailable && aiConsent ? 'AI와 마음 이야기하기' : '가이드 질문으로 정리하기' : '이어서 이야기하기'}</strong><span>{feelingsOnly ? 'AI 대화는 위 전송 동의 후 시작할 수 있어요' : '질문에 답하고 마지막에 보고 싶은 결과를 골라요'}</span></button>
         </div>
       ) : phase === 'result-choice' && !editingKey ? (
         <div className="chat-actions" role="group" aria-label="먼저 볼 결과 선택">
-          <button className="chat-choice" type="button" onClick={() => onComplete?.(completedAnswers, 'feelings')}><strong>마음 정리 먼저 보기</strong><span>사실 · 해석 · 감정</span></button>
-          <button className="chat-choice" type="button" onClick={() => onComplete?.(completedAnswers, 'tasks')}><strong>할 일 먼저 보기</strong><span>개선 행동 · 후속 보고 · 체크리스트</span></button>
+          <button className="chat-choice" type="button" onClick={() => onComplete?.(completedAnswers, 'feelings')}><strong>{feelingsOnly ? '대화한 마음 정리 확인' : '마음 정리 먼저 보기'}</strong><span>사실 · 해석 · 감정</span></button>
+          {!feelingsOnly && <button className="chat-choice" type="button" onClick={() => onComplete?.(completedAnswers, 'tasks')}><strong>할 일 먼저 보기</strong><span>개선 행동 · 후속 보고 · 체크리스트</span></button>}
         </div>
       ) : (
         <form className="chat-composer" onSubmit={submitAnswer}>
           <label className="visually-hidden" htmlFor="chat-answer">{editingKey ? '이전 답변 수정' : adaptiveMode ? adaptiveQuestion || '다음 질문 답변' : questionFor(answerStep || START_STEP, mode)}</label>
           {editingKey && <p className="field-help">이전 답변을 수정하고 있어요. 이후 답변은 유지됩니다.</p>}
-          <textarea id="chat-answer" ref={inputRef} className="chat-input" value={input} onChange={(event) => { setInput(event.target.value); setError(''); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} rows="2" maxLength="1000" disabled={adaptiveLoading} placeholder={adaptiveMode ? '질문에 답해 주세요.' : answerStep?.placeholder || START_STEP.placeholder} />
+          <textarea id="chat-answer" ref={inputRef} className="chat-input" value={input} onChange={(event) => { setInput(event.target.value); setError(''); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} rows="2" maxLength="1000" disabled={adaptiveLoading || Boolean(failedRequest)} placeholder={adaptiveMode ? '질문에 답해 주세요.' : answerStep?.placeholder || START_STEP.placeholder} />
           {error && <p className="alert" role="alert">{error}</p>}
+          {failedRequest && <div className="chat-actions"><button type="button" className="button-primary" onClick={() => requestAdaptive(failedRequest.turns, failedRequest.selectedOrder, failedRequest.finishNow)}>다시 시도하기</button><button type="button" className="button-secondary" onClick={() => { setAnswers((current) => ({ ...current, ...adaptiveSummary })); setAdaptiveMode(false); setFailedRequest(null); setPhase('questions'); setIndex(0); setError('AI 대화가 아닌 가이드 질문으로 이어갑니다. 위 대화 내용은 그대로 남아 있어요.'); }}>가이드 질문으로 계속하기</button></div>}
           <div className="chat-actions">
             <span className="field-help">Enter로 답변 · Shift+Enter로 줄바꿈</span>
             {!editingKey && answerStep && !answerStep.required && <button className="chat-skip" type="button" onClick={() => { const next = { ...answers, [answerStep.key]: '' }; setAnswers(next); setInput(''); if (index === steps.length - 1) finish(next); else setIndex(index + 1); }}>건너뛰기</button>}
             {editingKey && <button className="button-secondary" type="button" onClick={() => { setEditingKey(null); setInput(''); setError(''); }}>수정 취소</button>}
-            <button className="button-primary" type="submit" disabled={adaptiveLoading}>{adaptiveLoading ? '다음 질문 준비 중…' : editingKey ? '수정 완료' : index === steps.length - 1 && phase === 'questions' ? '정리 결과 확인하기' : '답변 보내기'}</button>
+            {feelingsOnly && adaptiveMode && !failedRequest && <button className="button-secondary" type="button" disabled={adaptiveLoading} onClick={() => sendAdaptive(true)}>여기까지 정리하기</button>}
+            <button className="button-primary" type="submit" disabled={adaptiveLoading || Boolean(failedRequest)}>{adaptiveLoading ? '다음 질문 준비 중…' : editingKey ? '수정 완료' : index === steps.length - 1 && phase === 'questions' ? '정리 결과 확인하기' : '답변 보내기'}</button>
           </div>
         </form>
       )}

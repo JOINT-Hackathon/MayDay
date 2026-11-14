@@ -1,3 +1,4 @@
+import { savedTracks, saveRecordTrack } from './recordTracks.js';
 import { buildBlackboxReport, buildRecoveryEmail } from './reportDrafts.js';
 import { useEffect, useRef, useState } from 'react';
 import AnalysisAddons from './components/AnalysisAddons.jsx';
@@ -14,11 +15,6 @@ const HOME_EXAMPLES = [
   { label: '첨부파일 빼먹음', text: '메일을 보낸 뒤 첨부파일이 빠진 것을 확인했어요.', mode: 'mistake' },
   { label: '보고 날짜 놓침', text: '예정된 보고 시간을 놓친 것을 확인했어요.', mode: 'mistake' },
   { label: '회의 때 한소리 들음', text: '회의에서 자료를 더 확인해 달라는 말을 들었어요.', mode: 'feedback' },
-];
-const FAILURE_EXAMPLES = [
-  { id: 'attachment', title: '메일에 첨부파일을 빠뜨렸어요', category: '문서·자료', summary: '보낸 뒤 누락을 확인하고 파일을 다시 전달했습니다.', action: '발송 전 파일명을 확인하고 실제 파일을 열어 봅니다.' },
-  { id: 'deadline', title: '보고 시간을 놓쳤어요', category: '일정·마감', summary: '일정 확인이 늦어져 담당자에게 현재 상황을 알렸습니다.', action: '보고 마감 하루 전과 한 시간 전에 알림을 설정합니다.' },
-  { id: 'meeting', title: '회의 자료 보완을 요청받았어요', category: '회의·소통', summary: '확인된 피드백과 추측을 나누어 정리했습니다.', action: '요청받은 수정 범위와 다음 공유 시점을 질문으로 확인합니다.' },
 ];
 const EMPTY_DRAFT = {
   rawText: '',
@@ -39,7 +35,7 @@ function readRecords() {
   try {
     const value = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '[]');
     if (!Array.isArray(value)) throw new Error('invalid records');
-    const stringFields = ['facts', 'interpretation', 'feeling', 'cause', 'impact', 'unknown', 'improvement', 'followUp', 'checklist', 'outcome'];
+    const stringFields = ['facts', 'interpretation', 'feeling', 'cause', 'impact', 'unknown', 'improvement', 'followUp', 'checklist', 'outcome', 'emotionFocus', 'emotionNeed', 'emotionClosing'];
     return {
       items: value.filter((item) => item && typeof item.id === 'string' && typeof item.facts === 'string' && typeof item.checklist === 'string').map((item) => ({
         ...item,
@@ -83,6 +79,9 @@ export default function App() {
   const [records, setRecords] = useState(readRecords);
   const [checklistState, setChecklistState] = useState(() => readChecklistItems(readRecords().items, TASK_TYPES));
   const [selectedId, setSelectedId] = useState(null);
+  const [formTrack, setFormTrack] = useState('feelings');
+  const [recordFilter, setRecordFilter] = useState('feelings');
+  const [emotionChat, setEmotionChat] = useState(false);
   const [taskFilter, setTaskFilter] = useState('전체');
   const [formErrors, setFormErrors] = useState({});
   const [homeError, setHomeError] = useState('');
@@ -250,20 +249,22 @@ export default function App() {
     window.scrollTo({ top: 0 });
   }
 
-  function saveCurrent(includeChecklist = false) {
+  function saveCurrent(includeChecklist = false, track = 'tasks') {
     if (!selected) return false;
     if (!selected.facts.trim()) { setNotice('확인한 사실을 먼저 추가해 주세요. 아래 내용 직접 정리하기에서 입력할 수 있어요.'); return false; }
-    const exists = records.items.some((item) => item.id === selected.id);
-    if (!persist(exists ? records.items.map((item) => item.id === selected.id ? selected : item) : [selected, ...records.items])) return false;
+    if (includeChecklist && !selected.checklist?.trim()) { setNotice('저장할 체크리스트를 먼저 작성해 주세요.'); return false; }
+    const previous = records.items.find((item) => item.id === selected.id);
+    const saved = saveRecordTrack(selected, previous, track);
+    if (!persist(previous ? records.items.map((item) => item.id === selected.id ? saved : item) : [saved, ...records.items])) return false;
     setSelectedId(selected.id);
-    setPendingRecord(null);
+    setPendingRecord({ ...selected, savedTracks: saved.savedTracks });
     if (includeChecklist && !checklistState.items.some((item) => item.recordId === selected.id)) {
       if (!persistChecklist([...checklistState.items, checklistFromRecord(selected)])) {
         setNotice('기록은 저장했지만 체크리스트를 저장하지 못했어요. 저장 공간을 확인한 뒤 다시 시도해 주세요.');
         return false;
       }
     }
-    setNotice(includeChecklist ? '재발 방지 체크리스트에 저장했어요. 다음 업무 전에 다시 확인해 보세요.' : '감정과 할 일을 내 기록에 저장했어요.');
+    setNotice(includeChecklist ? '재발 방지 체크리스트에 저장했어요. 다음 업무 전에 다시 확인해 보세요.' : track === 'feelings' ? '감정 기록을 저장했어요.' : '할 일을 저장했어요.');
     return true;
   }
 
@@ -271,6 +272,7 @@ export default function App() {
     aiAbortRef.current?.abort();
     aiAbortRef.current = null;
     setPendingRecord(null);
+    setEmotionChat(false);
     setTrackExpanded(false);
     setEntryMode(mode);
     setDraft({ ...EMPTY_DRAFT, rawText: initialText });
@@ -289,6 +291,14 @@ export default function App() {
   }
 
   function completeChat(answers, preferredTrack) {
+    if (emotionChat && selected) {
+      setPendingRecord({ ...selected, ...answers, facts: answers.facts?.trim() || selected.facts });
+      setEmotionChat(false);
+      setPage('review');
+      setNotice('대화 내용을 정리했어요. 확인한 뒤 마음 정리 저장을 눌러 주세요.');
+      return;
+    }
+    setFormTrack(preferredTrack === 'tasks' ? 'tasks' : 'feelings');
     setDraft((current) => ({ ...current, ...answers }));
     setPage('form');
     window.requestAnimationFrame(() => {
@@ -357,14 +367,14 @@ export default function App() {
     event.preventDefault();
     const errors = {
       facts: draft.facts.trim() ? '' : '직접 확인한 일·들은 말을 적어 주세요.',
-      checklist: draft.checklist.trim() ? '' : '다음 업무에서 확인할 행동 한 가지를 적어 주세요.',
+      checklist: formTrack === 'feelings' || draft.checklist.trim() ? '' : '다음 업무에서 확인할 행동 한 가지를 적어 주세요.',
     };
     setFormErrors(errors);
     if (errors.facts || errors.checklist) {
       document.getElementById(errors.facts ? 'field-facts' : 'field-checklist')?.focus();
       return;
     }
-    const item = {
+    const candidate = {
       id: draft.id || window.crypto?.randomUUID?.() || String(Date.now()) + '-' + Math.random().toString(36).slice(2),
       createdAt: draft.createdAt || new Date().toISOString(),
       source: draft.source || 'manual',
@@ -380,20 +390,23 @@ export default function App() {
       followUp: draft.followUp.trim(),
       checklist: draft.checklist.trim(),
       taskType: draft.taskType,
+      savedTracks: ['feelings', 'tasks'],
+      emotionFocus: draft.emotionFocus || '', emotionNeed: draft.emotionNeed || '', emotionClosing: draft.emotionClosing || '',
       actionChecked: Array.isArray(draft.actionChecked) ? draft.actionChecked : [],
       addonDrafts: draft.addonDrafts || {},
       usedAt: null,
       outcome: '',
     };
+    const item = saveRecordTrack(candidate, records.items.find((record) => record.id === candidate.id), formTrack);
     const nextRecords = records.items.some((record) => record.id === item.id)
       ? records.items.map((record) => record.id === item.id ? { ...item, usedAt: record.usedAt, outcome: record.outcome } : record)
       : [item, ...records.items];
     if (persist(nextRecords)) {
       const hasChecklist = checklistState.items.some((entry) => entry.recordId === item.id);
-      const checklistSaved = persistChecklist(hasChecklist
+      const checklistSaved = formTrack === 'feelings' || persistChecklist(hasChecklist
         ? checklistState.items.map((entry) => entry.recordId === item.id ? { ...entry, text: item.checklist, taskType: item.taskType, context: checklistContext(item) } : entry)
         : [checklistFromRecord(item), ...checklistState.items]);
-      setPendingRecord(null);
+      setPendingRecord({ ...candidate, savedTracks: item.savedTracks });
       setTrackExpanded(false);
       setSelectedId(item.id);
       setOutcomeText('');
@@ -402,7 +415,7 @@ export default function App() {
       setAddonDraft('');
       setEmailTone('formal');
       setPage('review');
-      setNotice(checklistSaved ? (draft.id ? '수정한 내용을 저장했어요. 이전에 편집한 보고·메일 초안도 함께 확인해 주세요.' : '이 기기의 브라우저에 기록했습니다.') : '기록은 저장했지만 체크리스트를 저장하지 못했어요. 저장 공간을 확인해 주세요.');
+      setNotice(checklistSaved ? (draft.id ? '수정한 내용을 저장했어요. 이전에 편집한 보고·메일 초안도 함께 확인해 주세요.' : formTrack === 'feelings' ? '이 기기에 감정 기록을 저장했어요.' : '이 기기에 할 일을 저장했어요.') : '기록은 저장했지만 체크리스트를 저장하지 못했어요. 저장 공간을 확인해 주세요.');
       window.scrollTo({ top: 0 });
     }
   }
@@ -616,14 +629,15 @@ export default function App() {
             <div className="container home-hero-inner">
               <div className="home-intro">
                 <HeroMascot className="home-may" />
-                <h1 id="hero-title">오늘 회사에서 무슨 일 있었어요?</h1>
-                <p>편하게 털어놔요. 마음 정리도, 지금 할 일도 메이가 같이 챙길게요.</p>
+                <h1 id="hero-title">오늘의 실수도,<br /><span>내일의 나를 위한 한 걸음.</span></h1>
+                <p>마음은 가볍게, 다음 행동은 선명하게. 메이와 함께 정리해요.</p>
               </div>
 
               <form className="home-composer" aria-label="오늘의 경험 정리" onSubmit={(event) => { event.preventDefault(); if (!draft.rawText.trim()) { setHomeError('상황을 한 문장으로 적어 주세요.'); return; } start(entryMode, draft.rawText, 'chat'); }} aria-busy={aiLoading}>
                 <label className="visually-hidden" htmlFor="home-raw-text">오늘 회사에서 있었던 일</label>
-                <textarea id="home-raw-text" value={draft.rawText} onChange={(event) => updateDraft('rawText', event.target.value)} maxLength={500} rows={4} disabled={aiLoading} aria-invalid={Boolean(homeError)} aria-describedby={homeError ? 'home-error' : 'home-input-help'} placeholder="예) 거래처에 견적서 옛날 버전 보냄… 팀장님은 아직 모르심" />
-                <div className="home-composer-bottom"><span className="input-count">{draft.rawText.length > 0 && `${draft.rawText.length} / 500`}</span><button className="button-primary" type="submit" disabled={aiLoading}>{aiLoading ? <><span className="loading-spinner" /> 정리하는 중…</> : <><Icon name="send" /> 메이데이 보내기</>}</button></div>
+                <textarea id="home-raw-text" value={draft.rawText} onChange={(event) => updateDraft('rawText', event.target.value)} maxLength={500} rows={4} disabled={aiLoading} aria-invalid={Boolean(homeError)} aria-describedby={homeError ? 'home-error' : 'home-input-help'} placeholder="오늘 어떤 일이 있었나요? 편하게 이야기해 주세요.
+예) 거래처에 이전 버전의 견적서를 보냈어요." />
+                <div className="home-composer-bottom"><span className="input-count">{draft.rawText.length > 0 ? `${draft.rawText.length} / 500` : '완벽한 문장이 아니어도 괜찮아요'}</span><button className="button-primary" type="submit" disabled={aiLoading}>{aiLoading ? <><span className="loading-spinner" /> 정리하는 중…</> : <><Icon name="send" /> 메이데이 보내기</>}</button></div>
                 {homeError && <p className="field-error" id="home-error" role="alert">{homeError}</p>}
               </form>
               {aiLoading && <div className="ai-progress" role="status"><span>AI가 사실과 해석을 나누고 있어요 · {aiElapsed}초{aiElapsed >= 12 ? ' · 연결이 늦어지면 기본 정리를 이용하세요' : ''}</span><button type="button" className="text-button" onClick={() => beginFromHome(true)}>기본 정리로 계속</button></div>}
@@ -631,7 +645,7 @@ export default function App() {
               <div className="home-examples"><span>이런 일도 괜찮아요</span>{HOME_EXAMPLES.map((example) => <button key={example.label} type="button" disabled={aiLoading} onClick={() => { setEntryMode(example.mode); updateDraft('rawText', example.text); document.getElementById('home-raw-text')?.focus(); }}>{example.label}</button>)}</div>
               <details className="home-input-options"><summary>직접 정리 · AI 설정</summary><div className="home-mode-switch" role="group" aria-label="경험 유형"><button type="button" aria-pressed={entryMode === 'mistake'} disabled={aiLoading} onClick={() => setEntryMode('mistake')}>실수했어요</button><button type="button" aria-pressed={entryMode === 'feedback'} disabled={aiLoading} onClick={() => setEntryMode('feedback')}>피드백을 받았어요</button></div><div className="home-input-help" id="home-input-help">{aiAvailable === true ? <label className="consent-label"><input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} disabled={aiLoading} />AI로 초안 만들기 · Anthropic에 이 문장을 보내는 데 동의합니다</label> : <span>지금은 기본 정리 모드예요. 입력한 내용은 외부로 보내지 않아요.</span>}<button className="text-button" type="button" disabled={aiLoading} onClick={() => start(entryMode, draft.rawText, 'form')}>직접 정리하기</button></div></details>
               <div className="home-recent"><div className="home-recent-heading"><h2>지난번 일들</h2><span>{records.items.length ? <button className="text-button" type="button" onClick={() => setPage('library')}>전체 보기 <Icon name="arrow" /></button> : '아직 기록이 없어요 · 예시를 먼저 살펴보세요'}</span></div>
-                <div className="home-recent-grid">{records.items.length ? records.items.slice(0, 3).map((item) => <button className="home-recent-card" type="button" key={item.id} onClick={() => openRecord(item)}><small>{new Date(item.createdAt).toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' })}</small><strong>{item.facts}</strong><span>{item.usedAt ? '업무에 적용함' : '내 기록에 저장됨'}</span></button>) : DEMO_RECORDS.map((example) => <button className="home-recent-card" type="button" key={example.title} onClick={() => openDemo(example)}><small>{example.date} · 시연 예시</small><strong>{example.title}</strong><span>{example.status}</span></button>)}</div>
+                <div className="home-recent-grid">{records.items.length ? records.items.slice(0, 3).map((item) => <button className="home-recent-card" type="button" key={item.id} onClick={() => openRecord(item)}><small>{new Date(item.createdAt).toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' })}</small><strong>{item.facts}</strong><span>{item.usedAt ? '업무에 적용함' : '내 기록에 저장됨'}</span></button>) : DEMO_RECORDS.slice(0, 3).map((example) => <button className="home-recent-card" type="button" key={example.title} onClick={() => openDemo(example)}><small>{example.date} · 시연 예시</small><strong>{example.title}</strong><span>{example.status}</span></button>)}</div>
               </div>
             </div>
           </section>
@@ -639,7 +653,7 @@ export default function App() {
 
         {page === 'chat' && (
           <section className="container chat-workflow">
-            <GuidedChat mode={entryMode} initialText={draft.rawText} onComplete={completeChat} onCancel={() => { setPage('home'); window.scrollTo({ top: 0 }); }} />
+            <GuidedChat key={emotionChat ? 'feelings' : 'experience'} onFeelingsStart={(text) => { setPendingRecord(createAnalysisDraft(text, entryMode)); setEmotionChat(true); }} feelingsOnly={emotionChat} initialAnswers={emotionChat ? selected : undefined} mode={entryMode} initialText={emotionChat ? selected?.facts || '' : draft.rawText} onComplete={completeChat} onCancel={() => { setPage(emotionChat ? 'review' : 'home'); setEmotionChat(false); window.scrollTo({ top: 0 }); }} />
           </section>
         )}
 
@@ -648,6 +662,8 @@ export default function App() {
             <div className="section-heading"><div><p className="eyebrow">01 / 경험 정리</p><h1 id="form-title">한 번 적고, 두 갈래로 정리해요.</h1><p>확인한 사실과 마음에 남은 해석을 나누고, 다음 업무에 쓸 행동을 남겨 보세요.</p></div><button className="button-secondary" type="button" onClick={() => setPage('home')}>← 홈으로</button></div>
             <div className="progress-steps" aria-label="진행 단계"><span className="is-current">1 경험 입력</span><span>2 감정·할 일 정리</span><span>3 체크리스트 저장</span></div>
             <form onSubmit={saveDraft} noValidate>
+              <div className="track-page-tabs" role="group" aria-label="저장할 기록 종류">{[['feelings', '감정 기록 저장'], ['tasks', '할 일 저장']].map(([key, label]) => <button key={key} type="button" aria-pressed={formTrack === key} onClick={() => { setFormTrack(key); setFormErrors({}); }}>{label}</button>)}</div>
+              <p className="field-help">선택한 종류만 저장합니다. 직접 확인한 사실은 두 기록에서 함께 사용해요.</p>
               <section className="intake-panel" aria-labelledby="intake-title">
                 <div className="intake-heading"><div><p className="eyebrow">선택 · AI 작성 보조</p><h2 id="intake-title">처음 적은 상황</h2><p>아래에 정리한 내용만 저장돼요. AI를 쓰지 않아도 직접 채울 수 있어요.</p></div><div className="form-mode-switch" role="group" aria-label="경험 유형"><button type="button" aria-pressed={entryMode === 'mistake'} onClick={() => setEntryMode('mistake')}>실수</button><button type="button" aria-pressed={entryMode === 'feedback'} onClick={() => setEntryMode('feedback')}>지적</button></div></div>
                 <Field name="rawText" label="상황을 한두 문장으로 적어 주세요" value={draft.rawText} onChange={updateDraft} help="AI 버튼을 누를 때 이 문장만 외부 AI 서비스로 전송합니다." placeholder={entryMode === 'mistake' ? '예: 공유한 표의 합계가 원본과 달랐어요. 누가 사용했는지는 모릅니다.' : '예: 다음 자료는 더 확인해 달라는 말을 들었어요. 어떤 항목인지는 모르겠습니다.'} rows={3} />
@@ -665,7 +681,7 @@ export default function App() {
                   <Field name="unknown" label="아직 확인할 일" value={draft.unknown} onChange={updateDraft} placeholder="예: 자료를 누가 사용했는지 확인하기" rows={2} />
                   <Field name="improvement" label="개선 행동" value={draft.improvement} onChange={updateDraft} placeholder="예: 공유 전 원본 수치를 대조하기" rows={2} />
                   <Field name="followUp" label="후속 질문·보고" value={draft.followUp} onChange={updateDraft} placeholder="확인할 내용을 질문으로 적어 주세요" rows={2} />
-                  <Field name="checklist" label="다음 업무 체크리스트 한 가지" value={draft.checklist} onChange={updateDraft} required error={formErrors.checklist} help="다음에 실제로 점검할 수 있는 행동을 적어 주세요." placeholder="예: 발송 전 첨부 파일을 직접 열어 확인하기" rows={2} />
+                  <Field name="checklist" label="다음 업무 체크리스트 한 가지" value={draft.checklist} onChange={updateDraft} required={formTrack === 'tasks'} error={formErrors.checklist} help="다음에 실제로 점검할 수 있는 행동을 적어 주세요." placeholder="예: 발송 전 첨부 파일을 직접 열어 확인하기" rows={2} />
                   <div className="field"><label className="field-label" htmlFor="task-type">다시 볼 업무 종류</label><select id="task-type" value={draft.taskType} onChange={(event) => updateDraft('taskType', event.target.value)}>{TASK_TYPES.map((item) => <option key={item} value={item}>{item}</option>)}</select></div>
                 </section>
               </div>
@@ -674,7 +690,7 @@ export default function App() {
 
               <div className="form-save">
                 <p className="field-help">기록은 이 기기의 브라우저에만 저장됩니다. 공유 기기에서는 기록을 남기지 마세요.</p>
-                <div className="form-actions"><button className="button-primary" type="submit" disabled={records.readError}>두 트랙 저장하기 <span aria-hidden="true">↗</span></button><button className="button-secondary" type="button" onClick={() => setPage('home')}>나중에 하기</button></div>
+                <div className="form-actions"><button className="button-primary" type="submit" disabled={records.readError}>{formTrack === 'feelings' ? '감정 기록 저장하기' : '할 일 저장하기'} <span aria-hidden="true">↗</span></button><button className="button-secondary" type="button" onClick={() => setPage('home')}>나중에 하기</button></div>
               </div>
             </form>
           </section>
@@ -683,7 +699,7 @@ export default function App() {
         {(page === 'review' || page === 'action') && selected && (
           <section className={`container workflow result-workflow${page === 'action' ? ' focused-action' : ''}`} aria-labelledby="review-title">
             {page === 'action' && <div className="track-page-tabs" role="group" aria-label="분석 트랙"><button type="button" onClick={() => setPage('review')}>마음 정리</button><button type="button" aria-pressed="true">지금 할 일</button></div>}
-            {page === 'action' ? <div className="source-strip action-overview"><strong>{selected.overview || selected.unknown || selected.checklist}</strong><p>{selected.followUp}<br />다음부터는 {selected.checklist}</p></div> : <div className="source-strip"><div><span className="source-label">{selected.source === 'ai' ? 'AI가 정리한 경험' : '내가 쓴 글'}</span><p>{selected.facts ? `“${selected.facts}”` : '확인한 사실을 추가해 주세요.'}</p></div><button className="button-secondary" type="button" onClick={() => { updateDraft('rawText', selected.facts); setPage('home'); window.scrollTo({ top: 0 }); }}><Icon name="refresh" />다시 입력</button></div>}
+            {page === 'action' ? <div className="source-strip action-overview"><strong>{selected.overview || selected.unknown || selected.checklist}</strong><p>{selected.followUp}<br />다음부터는 {selected.checklist}</p></div> : <div className="source-strip"><div><span className="source-label">{selected.source === 'demo' ? '가상 시연 사례 · 실제 사용자 기록이 아닙니다' : selected.source === 'ai' ? 'AI가 정리한 경험' : '내가 쓴 글'}</span><p>{selected.facts ? `“${selected.facts}”` : '확인한 사실을 추가해 주세요.'}</p></div><button className="button-secondary" type="button" onClick={() => { updateDraft('rawText', selected.facts); setPage('home'); window.scrollTo({ top: 0 }); }}><Icon name="refresh" />다시 입력</button></div>}
             <div className="result-heading"><h1 id="review-title">{page === 'action' ? '메이가 더 도와줄게요' : '많이 놀랐죠? 하나씩 같이 정리해봐요'}</h1></div>
             {page === 'action' && <p className="action-intro">필요한 것만 켜보세요.</p>}<div className="result-track-grid">
               <article className="track-result-card emotion-result-card"><div className="track-panel-heading"><span className="track-icon track-icon-day"><img src="/mayday-day.png" alt="" /></span><div><h2>마음 정리</h2><p>일어난 일과 내 걱정을 나눠서 봐요</p></div></div>
@@ -691,18 +707,20 @@ export default function App() {
                 <div className="result-detail"><span>내 머릿속 걱정</span><p>{selected.interpretation ? `· “${selected.interpretation}”` : '아직 적지 않았어요. 떠오른 생각을 직접 정리해 보세요.'}</p></div>
                 <div className="result-detail"><span>지금 내 기분</span><p>{selected.feeling ? `· ${selected.feeling}` : '지금 느끼는 감정을 직접 적어 주세요.'}</p></div>
                 <div className="result-detail compassion-note"><span>메이가 해주고 싶은 말</span><p>· {selected.compassion || "이번 실수가 당신의 전부는 아니에요. 하나씩 같이 수습해봐요."}</p></div>
-                <button className="button-secondary track-cta" type="button" onClick={() => saveCurrent()} disabled={records.readError}><Icon name="heart" variant="clay" size={24} />마음 정리 저장</button>
+                {[['emotionFocus', '마음에 남는 부분'], ['emotionNeed', '지금 필요한 것'], ['emotionClosing', '나에게 남기는 말']].map(([key, label]) => selected[key] && <div className="result-detail" key={key}><span>{label}</span><p>{selected[key]}</p></div>)}
+                <button className="button-primary track-cta" type="button" onClick={() => { setEmotionChat(true); setEntryMode(selected.mode); setPage('chat'); }}>마음 더 이야기하기</button>
+                <button className="button-secondary track-cta" type="button" onClick={() => saveCurrent(false, 'feelings')} disabled={records.readError}><Icon name="heart" variant="clay" size={24} />마음 정리 저장</button>
               </article>
               <article className="track-result-card task-result-card"><div className="track-panel-heading"><span className="track-icon track-icon-may"><img src="/mayday-hero.png" alt="" /></span><div><h2>지금 할 일</h2><p>{trackExpanded || page === 'action' ? '필요한 것만 켜서 써요' : '급한 것부터 차근차근 해봐요'}</p></div></div>
-                {trackExpanded || page === 'action' ? <AnalysisAddons key={selected.id} record={selected} onToggleStep={toggleActionStep} addon={addon} addonVisible={addonVisible} addonDraft={addonDraft} emailTone={emailTone} onToggleAddon={toggleAddon} onEditDraft={editAddonDraft} onToneChange={changeEmailTone} onCopy={copyAddon} onDownload={downloadAddon} onSaveChecklist={() => saveCurrent(true)} onSaveRecord={() => saveCurrent()} /> : <>
+                {trackExpanded || page === 'action' ? <AnalysisAddons key={selected.id} record={selected} onToggleStep={toggleActionStep} addon={addon} addonVisible={addonVisible} addonDraft={addonDraft} emailTone={emailTone} onToggleAddon={toggleAddon} onEditDraft={editAddonDraft} onToneChange={changeEmailTone} onCopy={copyAddon} onDownload={downloadAddon} onSaveChecklist={() => saveCurrent(true)} onSaveRecord={() => { if (saveCurrent()) setNotice('보고서를 내 기록에 저장했어요. 내 기록에서 다시 열 수 있어요.'); }} /> : <>
                   <div className="result-detail"><span>지금 상황</span><p>· {selected.overview || selected.unknown || selected.checklist}</p></div>
                   <div className="result-detail"><span>다음엔 이렇게</span><p>· {selected.improvement || '실행할 수 있는 행동을 직접 정해 보세요.'}</p><p>· {selected.checklist}</p></div>
                   <div className="result-detail"><span>누구한테 먼저 말할까</span><p>· {selected.followUp || '필요한 내용을 담당자에게 확인해 보세요.'}</p></div>
-                  <button className="button-primary track-cta" type="button" onClick={() => setTrackExpanded(true)}><Icon name="send" />수습 도와줘</button>
+                  <button className="button-primary track-cta" type="button" onClick={() => setTrackExpanded(true)}><Icon name="send" />수습 도와줘</button><button className="button-secondary track-cta" type="button" onClick={() => saveCurrent(false, 'tasks')} disabled={records.readError}>할 일 저장</button>
                 </>}
               </article>
             </div>
-            <span className="analysis-source">{selected.source === 'demo' ? '시연 예시' : selected.source === 'ai' ? '사실을 확인한 후 사용해 주세요' : selected.source === 'local' ? '기본 정리 · 추천 행동은 확인 후 수정해 주세요' : '직접 정리한 기록'}</span><div className="result-bottom-actions"><button className="text-button" type="button" onClick={() => { setServerSeed(selected); setPage('server'); window.scrollTo({ top: 0 }); }}>이 경험을 서버에 저장하기</button><button className="text-button" type="button" onClick={() => { setDraft({ ...EMPTY_DRAFT, ...selected, rawText: selected.facts }); setEntryMode(selected.mode); setPage('form'); window.scrollTo({ top: 0 }); }}><Icon name="edit" />내용 직접 정리하기</button>{trackExpanded && <button className="text-button" type="button" onClick={() => { setPage(page === 'action' ? 'review' : 'action'); window.scrollTo({ top: 0 }); }}>{page === 'action' ? '두 트랙 함께 보기' : '지금 할 일 크게 보기'}<Icon name="arrow" /></button>}<button className="text-button" type="button" onClick={(event) => { if (saveCurrent(true)) openChecklistPopup(selected, event); }}><Icon name="shield" />재발 방지 체크리스트 확인</button>{!pendingRecord && <button className="text-button danger" type="button" onClick={() => deleteRecord(selected.id)}>기록 삭제</button>}</div>
+            <span className="analysis-source">{selected.source === 'demo' ? '시연 예시' : selected.source === 'ai' ? '사실을 확인한 후 사용해 주세요' : selected.source === 'local' ? '기본 정리 · 추천 행동은 확인 후 수정해 주세요' : '직접 정리한 기록'}</span><div className="result-bottom-actions"><button className="text-button" type="button" onClick={() => { setServerSeed(selected); setPage('server'); window.scrollTo({ top: 0 }); }}>이 경험을 서버에 저장하기</button><button className="text-button" type="button" onClick={() => { setDraft({ ...EMPTY_DRAFT, ...selected, rawText: selected.facts }); setEntryMode(selected.mode); setPage('form'); window.scrollTo({ top: 0 }); }}><Icon name="edit" />내용 직접 정리하기</button>{trackExpanded && <button className="text-button" type="button" onClick={() => { setPage(page === 'action' ? 'review' : 'action'); window.scrollTo({ top: 0 }); }}>{page === 'action' ? '두 트랙 함께 보기' : '지금 할 일 크게 보기'}<Icon name="arrow" /></button>}<button className="text-button" type="button" onClick={(event) => { if (saveCurrent(true)) openChecklistPopup(selected, event); }}><Icon name="shield" />재발 방지 체크리스트 확인</button>{records.items.some((item) => item.id === selected.id) && <button className="text-button danger" type="button" onClick={() => deleteRecord(selected.id)}>기록 삭제</button>}</div>
             {selected.usedAt && <div className="panel stack outcome-panel"><h2>적용 결과</h2><p>이번 업무에서 체크리스트를 사용한 경험을 남겨 보세요.</p><textarea aria-label="적용 결과" value={outcomeText} onChange={(event) => setOutcomeText(event.target.value)} rows="3" maxLength="1200" /><button className="button-secondary" type="button" onClick={saveOutcome}>결과 저장하기</button></div>}
           </section>
         )}
@@ -710,14 +728,15 @@ export default function App() {
         {page === 'examples' && (
           <section className="container workflow" aria-labelledby="examples-title">
             <div className="section-heading"><div><p className="eyebrow">실패 라이브러리</p><h1 id="examples-title">비슷한 경험에서 다음 행동을 찾아보세요.</h1><p>아래는 시연용 예시입니다. 실제 사용자 기록이 공개되거나 공유되지는 않습니다.</p></div><button className="button-primary" type="button" onClick={() => setPage('home')}>내 경험 정리하기</button></div>
-            <div className="example-library-grid">{FAILURE_EXAMPLES.map((example) => <article className="record-card" key={example.id}><span className="badge">시연 예시 · {example.category}</span><h2>{example.title}</h2><p>{example.summary}</p><div className="example-library-action"><strong>다음에 확인할 행동</strong><p>{example.action}</p></div><button className="button-secondary" type="button" onClick={() => { setEntryMode('mistake'); setDraft({ ...EMPTY_DRAFT, rawText: example.title }); setPage('home'); window.scrollTo({ top: 0 }); }}>이 예시로 시작하기</button></article>)}</div>
+            <div className="example-library-grid">{DEMO_RECORDS.map((example) => <article className="record-card" key={example.title}><span className="badge">가상 시연 · {example.taskType}</span><h2>{example.title}</h2><p>{example.text}</p><div className="example-library-action"><strong>다음에 확인할 행동</strong><p>{example.checklist}</p></div><div className="demo-card-actions"><button className="button-primary" type="button" onClick={() => openDemo(example)}>완성된 결과 보기</button><button className="button-secondary" type="button" onClick={() => start(example.mode, example.text, 'chat')}>대화로 시작하기</button></div></article>)}</div>
           </section>
         )}
 
         {page === 'library' && (
           <section className="container workflow" aria-labelledby="library-title">
-            <div className="section-heading"><div><p className="eyebrow">04 / 내 기록</p><h1 id="library-title">쌓인 경험을 다시 꺼내 보세요.</h1><p>그때 확인한 일과 다음 업무에 남긴 행동을 함께 볼 수 있습니다.</p></div><button className="button-primary" type="button" onClick={() => setPage('home')}>새 경험 정리하기</button></div>
-            {records.items.length ? <div className="record-list">{records.items.map((item) => <article className="record-card" key={item.id}><div><span className="badge">{item.mode === 'mistake' ? '실수' : '지적'} · {item.taskType}</span><h2>{item.checklist}</h2><p>{item.facts}</p><small>{new Date(item.createdAt).toLocaleDateString('ko-KR')}{item.usedAt ? ' · 다음 업무에 적용함' : ' · 적용 전'}</small></div><button className="button-secondary" type="button" onClick={() => openRecord(item)}>자세히 보기</button></article>)}</div> : <div className="empty-state"><h2>아직 정리한 경험이 없습니다.</h2><p>처음 겪은 실수나 지적에서 다음에 확인할 행동 하나를 만들어 보세요.</p><button className="button-primary" type="button" onClick={() => setPage('home')}>시작하기</button></div>}
+            <div className="section-heading"><div><p className="eyebrow">04 / 내 기록</p><h1 id="library-title">쌓인 경험을 다시 꺼내 보세요.</h1><p>감정 기록과 할 일을 나눠서 꺼내 볼 수 있어요.</p></div><button className="button-primary" type="button" onClick={() => setPage('home')}>새 경험 정리하기</button></div>
+            <div className="track-page-tabs" role="group" aria-label="기록 종류">{[['feelings', '감정 기록'], ['tasks', '할 일']].map(([key, label]) => <button key={key} type="button" aria-pressed={recordFilter === key} onClick={() => setRecordFilter(key)}>{label}</button>)}</div>
+            {records.items.filter((item) => savedTracks(item).includes(recordFilter)).length ? <div className="record-list">{records.items.filter((item) => savedTracks(item).includes(recordFilter)).map((item) => <article className="record-card" key={item.id}><div><span className="badge">{item.mode === 'mistake' ? '실수' : '지적'} · {item.taskType}</span><h2>{recordFilter === 'feelings' ? item.feeling || '마음 정리' : item.checklist || item.improvement || '할 일'}</h2><p>{item.facts}</p><small>{new Date(item.createdAt).toLocaleDateString('ko-KR')}{item.usedAt ? ' · 다음 업무에 적용함' : ' · 적용 전'}</small></div><button className="button-secondary" type="button" onClick={() => openRecord(item)}>자세히 보기</button></article>)}</div> : <div className="empty-state"><h2>아직 정리한 경험이 없습니다.</h2><p>처음 겪은 실수나 지적에서 다음에 확인할 행동 하나를 만들어 보세요.</p><button className="button-primary" type="button" onClick={() => setPage('home')}>시작하기</button></div>}
           </section>
         )}
 

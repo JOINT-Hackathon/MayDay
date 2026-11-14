@@ -35,3 +35,4 @@ export function buildRecoveryEmail(record, tone = 'formal') {
     casual ? '확인 후 다시 공유드리겠습니다.' : '감사합니다.',
   ].join('\n');
 }
+

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 test('HTTP API enforces consent, validation, limits, and structured Claude responses', async () => {
   const child = spawn(process.execPath, ['--import', './scripts/fixtures/claude-fetch.mjs', 'server.mjs'], {
     cwd: fileURLToPath(new URL('../', import.meta.url)),
-    env: { ...process.env, HOST: '127.0.0.1', PORT: '0', ANTHROPIC_API_KEY: 'test-only', AI_DAILY_LIMIT: '3' },
+    env: { ...process.env, HOST: '127.0.0.1', PORT: '0', ANTHROPIC_API_KEY: 'test-only', AI_DAILY_LIMIT: '5' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -43,6 +43,15 @@ test('HTTP API enforces consent, validation, limits, and structured Claude respo
     const chat = await post({ mode: 'feedback', consent: true, turns: [{ role: 'user', content: '보완 요청을 받았어요.' }] }, '/api/chat-turn');
     assert.equal(chat.status, 200);
     assert.equal((await chat.json()).done, false);
+    const emotionInput = { mode: 'feedback', consent: true, preferredTrack: 'feelings', turns: [{ role: 'user', content: '회의에서 보완 요청을 받아 걱정돼요.' }] };
+    const emotion = await post(emotionInput, '/api/chat-turn').then((response) => response.json());
+    assert.match(emotion.empathy, /마음/);
+    assert.equal(emotion.done, false);
+    assert.equal('checklist' in emotion.summary, false);
+    const closed = await post({ ...emotionInput, finishNow: true }, '/api/chat-turn').then((response) => response.json());
+    assert.equal(closed.done, true, 'explicit finish does not require task fields');
+    assert.equal(closed.question, '');
+    assert.equal(closed.summary.feeling, '걱정');
     const timeout = await post({ ...input, text: 'test-timeout' });
     assert.equal(timeout.status, 504);
     assert.equal((await timeout.json()).code, 'timeout');

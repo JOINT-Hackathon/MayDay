@@ -59,3 +59,16 @@ test('updated checklist contexts keep legacy items reachable', () => {
   assert.equal(checklistContext({ taskType: '기타', text: '업무 준비' }), 'other');
   assert.equal(checklistContext({ context: 'report', taskType: '문서·자료', text: '메일 관련 보고서' }), 'report');
 });
+
+test('all demonstration cases preserve complete actions and fictional provenance', () => {
+  assert.equal(DEMO_RECORDS.length, 15);
+  assert.equal(new Set(DEMO_RECORDS.map(item => item.title)).size, 15);
+  for (const example of DEMO_RECORDS) {
+    const record = createDemoRecord(example);
+    for (const key of ['facts', 'interpretation', 'feeling', 'unknown', 'improvement', 'followUp', 'checklist', 'taskType']) assert.ok(record[key].trim(), `${example.title}: ${key}`);
+    assert.equal(record.source, 'demo');
+    assert.equal(record.causeStatus, 'unknown');
+    assert.equal(record.usedAt, null);
+    assert.deepEqual(record.actionChecked, []);
+  }
+});

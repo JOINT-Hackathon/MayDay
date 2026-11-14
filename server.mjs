@@ -176,13 +176,13 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/chat-turn') {
     const turns = input?.turns;
     const track = input?.preferredTrack;
-    const validTurns = Array.isArray(turns) && turns.length <= 80 &&
+    const validTurns = Array.isArray(turns) && turns.length > 0 && turns.length <= 80 && turns.some((turn) => turn?.role === 'user') &&
       turns.every((turn) => turn && ['assistant', 'user'].includes(turn.role) &&
         typeof turn.content === 'string' && turn.content.trim() && turn.content.length <= 1000) &&
       turns.filter((turn) => turn.role === 'user').length <= 40 &&
       turns.reduce((total, turn) => total + turn.content.length, 0) <= 60000;
-    if (!validTurns || (track != null && !['feelings', 'tasks'].includes(track))) {
-      sendJson(res, 400, { error: '대화 내용을 확인해 주세요. 답변은 최대 6번까지 입력할 수 있습니다.' });
+    if ((input.finishNow !== undefined && typeof input.finishNow !== 'boolean') || !validTurns || (track != null && !['feelings', 'tasks'].includes(track))) {
+      sendJson(res, 400, { error: '대화 내용을 확인해 주세요. 대화는 사용자 답변 40개, 전체 메시지 80개 이내로 입력해 주세요.' });
       return;
     }
   }
@@ -200,7 +200,7 @@ async function handleApi(req, res, pathname) {
   }
   try {
     if (pathname === '/api/chat-turn') {
-      sendJson(res, 200, await chatTurn(mode, input.preferredTrack || null, input.turns));
+      sendJson(res, 200, await chatTurn(mode, input.preferredTrack || null, input.turns, input.finishNow === true));
     } else {
       sendJson(res, 200, await organize(input.text.trim(), mode));
     }
