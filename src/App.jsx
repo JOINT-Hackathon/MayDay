@@ -7,7 +7,7 @@ import HeroMascot from './components/HeroMascot.jsx';
 import { createAnalysisDraft, createDemoRecord, DEMO_RECORDS } from './analysis.js';
 import GuidedChat from './components/GuidedChat.jsx';
 import ServerWorkspace from './components/ServerWorkspace.jsx';
-import { CHECKLIST_STORAGE_KEY, CHECKLIST_CONTEXTS, checklistContext, checklistFromRecord, readChecklistItems, addDemoChecklistItems } from './checklistStore.js';
+import { CHECKLIST_STORAGE_KEY, CHECKLIST_CONTEXTS, checklistContext, checklistFromRecord, readChecklistItems } from './checklistStore.js';
 
 const STORAGE_KEY = 'daeumjang.reflections.v1';
 const TASK_TYPES = ['문서·자료', '회의·소통', '일정·마감', '기타'];
@@ -751,7 +751,6 @@ export default function App() {
       {checklistPopupOpen && (
         <dialog className="checklist-dialog" ref={checklistDialogRef} onClose={closeChecklistPopup} onKeyDown={handleChecklistKeys} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); if (event.target === event.currentTarget && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) event.currentTarget.close(); }} aria-labelledby="checklist-dialog-title" aria-describedby="checklist-dialog-description">
           <div className="checklist-dialog-heading"><Icon name="shield" variant="clay" size={44} /><div><h2 id="checklist-dialog-title">내 체크리스트</h2><p id="checklist-dialog-description">일 시작하기 전에 한 번만 훑어봐요</p></div><button className="dialog-close" type="button" aria-label="체크리스트 닫기" onClick={() => checklistDialogRef.current?.close()}>×</button></div>
-          <div className="popup-demo"><p className="field-help">시연용 가상 항목 15개를 담아 분류·체크·적용을 체험해 보세요. 기존 항목은 유지됩니다.</p><button className="button-secondary" type="button" disabled={checklistState.readError} onClick={() => { const next = addDemoChecklistItems(checklistState.items); const added = next.length - checklistState.items.length; if (persistChecklist(next)) { setPopupFilter('전체'); setPopupError(''); setNotice(added ? `가상 시연 항목 ${added}개를 담았어요.` : '시연 항목이 이미 모두 담겨 있어요.'); } }}>시연 항목 15개 담기</button></div>
           <div className="popup-filters" role="group" aria-label="업무 종류 필터">{CHECKLIST_CONTEXTS.filter((context) => context.id !== 'other' || checklistState.items.some((item) => checklistContext(item) === 'other')).map((context) => <button key={context.id} type="button" aria-pressed={popupFilter === context.id} title="선택한 분류를 다시 누르면 전체 항목을 봐요" onClick={() => { setPopupFilter(popupFilter === context.id ? '전체' : context.id); setPopupCheckedIds([]); setPopupError(''); }}>#{context.label}</button>)}</div>
           <div className="popup-list">{popupItems.length ? popupItems.map((item, index) => (
             <div className="popup-checkitem" key={item.id} draggable={editingChecklistId !== item.id} onDragStart={() => { draggingChecklistIdRef.current = item.id; }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); moveChecklistItem(draggingChecklistIdRef.current, item.id); draggingChecklistIdRef.current = null; }} onDragEnd={() => { draggingChecklistIdRef.current = null; }}>
