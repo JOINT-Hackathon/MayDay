@@ -1,4 +1,7 @@
 import http from 'node:http';
+import { proxyTeam5 } from './server/team5.mjs';
+import { organize, chatTurn } from './server/reflection.mjs';
+import { getAiConfig, publicAiError } from './server/claude.mjs';
 import { existsSync, createReadStream, statSync } from 'node:fs';
 import { resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +16,6 @@ if (existsSync(envPath) && typeof process.loadEnvFile === 'function') {
 const dev = process.argv.includes('--dev');
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || (dev ? 5173 : 4173));
-const fields = ['observed', 'interpretation', 'feeling', 'unknown', 'improvement', 'followUp', 'checklist'];
 const requestsByIp = new Map();
 const dailyLimit = Math.max(1, Number(process.env.AI_DAILY_LIMIT) || 100);
 const dailyUsage = { day: '', count: 0 };
@@ -27,22 +29,40 @@ const mimeTypes = {
   '.svg': 'image/svg+xml',
   '.webp': 'image/webp',
 };
+const securityHeaders = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+};
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "connect-src 'self'",
+  "font-src 'self' https://fonts.gstatic.com",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "img-src 'self' data:",
+  "object-src 'none'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+].join('; ');
 
 function sendJson(res, status, value) {
   res.writeHead(status, {
+    ...securityHeaders,
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
   });
   res.end(JSON.stringify(value));
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = 12000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 12000) {
+    if (size > maxBytes) {
       const error = new Error('요청이 너무 깁니다.');
       error.status = 413;
       throw error;
@@ -86,84 +106,21 @@ function dailyAllowed() {
   return true;
 }
 
-function responseText(result) {
-  for (const item of result.output || []) {
-    if (item.type !== 'message') continue;
-    for (const part of item.content || []) {
-      if (part.type === 'output_text') return part.text;
-    }
-  }
-  return '';
-}
-
-async function organize(text, mode) {
-  const schema = {
-    type: 'object',
-    properties: Object.fromEntries(fields.map((field) => [field, { type: 'string' }])),
-    required: fields,
-    additionalProperties: false,
-  };
-  const instructions = [
-    '당신은 사회초년생의 업무 경험을 정리하는 보조 도구다.',
-    '입력에 없는 사실, 상대의 의도, 원인, 결과를 지어내지 마라.',
-    'observed에는 사용자가 직접 보고 들었다고 서술한 내용만 제안한다. 확실하지 않으면 빈 문자열로 둔다.',
-    'interpretation에는 사용자의 추측이나 해석만 제안한다.',
-    'feeling에는 사용자가 표현한 감정만 넣고, 언급이 없으면 빈 문자열로 둔다.',
-    'unknown에는 확인되지 않은 정보나 확인할 질문을 한 문장으로 제안한다.',
-    'improvement는 사용자 입력에서 확인되는 개선 행동이나 안전한 확인 행동을 제안한다. 원인을 단정하지 마라.',
-    'mistake 유형에서는 observed에 확인한 실수의 내용만, unknown에 아직 모르는 원인·영향 범위·추가 확인 사항만 적는다. 영향받은 사람, 원인, 수습 완료 여부를 추측하지 마라.',
-    'mistake 유형의 followUp은 확인된 사실과 현재 확인할 일을 상사에게 간결하게 알리는 초안 한 문장이다. 하지 않은 조치나 확인되지 않은 결과를 완료했다고 쓰지 마라.',
-    'feedback 유형에서는 observed에 실제 인용이나 직접 본 행동만 적고, 상사의 의도나 구체적인 평가 기준을 지어내지 마라.',
-    'feedback 유형의 improvement는 기준이 불명확하면 구체적인 예시를 확인하는 행동으로 둔다. followUp은 상사에게 보낼 짧고 존중하는 확인 질문으로 둔다.',
-    'checklist는 입력에 확인된 기준이 있으면 다시 확인할 행동으로 쓴다. 기준이 없으면 기준이나 예시를 묻는 행동만 제안한다. 미확인 사항을 사실처럼 쓰지 마라.',
-    '각 값은 한국어 한 문장으로 짧게 작성한다. 의료·법률 판단이나 괴롭힘 판정은 하지 마라.',
-  ].join(' ');
-
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: 'Bearer ' + process.env.OPENAI_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || 'gpt-6-luna',
-      store: false,
-      reasoning: { effort: 'none' },
-      max_output_tokens: 1000,
-      input: [
-        { role: 'system', content: instructions },
-        { role: 'user', content: JSON.stringify({ mode, text }) },
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'work_reflection',
-          strict: true,
-          schema,
-        },
-      },
-    }),
-    signal: AbortSignal.timeout(20_000),
-  });
-
-  if (!response.ok) throw new Error('upstream_error');
-  const result = await response.json();
-  if (result.status !== 'completed') throw new Error('incomplete_response');
-  const output = responseText(result);
-  if (!output) throw new Error('empty_response');
-  const parsed = JSON.parse(output);
-  if (!fields.every((field) => typeof parsed[field] === 'string')) {
-    throw new Error('invalid_response');
-  }
-  return Object.fromEntries(fields.map((field) => [field, parsed[field].trim().slice(0, 500)]));
-}
-
 async function handleApi(req, res, pathname) {
-  if (pathname === '/api/status' && req.method === 'GET') {
-    sendJson(res, 200, { available: Boolean(process.env.OPENAI_API_KEY) });
+  if (pathname.startsWith('/api/team5/')) {
+    await proxyTeam5(req, res, sendJson, readJson);
     return;
   }
-  if (pathname !== '/api/organize') {
+  if (pathname === '/api/health' && req.method === 'GET') {
+    const ready = dev || existsSync(resolve(distRoot, 'index.html'));
+    sendJson(res, ready ? 200 : 503, { ok: ready });
+    return;
+  }
+  if (pathname === '/api/status' && req.method === 'GET') {
+    sendJson(res, 200, { available: Boolean(getAiConfig().apiKey), provider: 'anthropic', model: getAiConfig().model, verified: false });
+    return;
+  }
+  if (pathname !== '/api/organize' && pathname !== '/api/chat-turn') {
     sendJson(res, 404, { error: 'API를 찾을 수 없습니다.' });
     return;
   }
@@ -187,7 +144,8 @@ async function handleApi(req, res, pathname) {
     sendJson(res, 429, { error: '잠시 후 다시 시도해 주세요.' });
     return;
   }
-  if (!String(req.headers['content-type'] || '').includes('application/json')) {
+  const contentType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+  if (contentType !== 'application/json') {
     sendJson(res, 415, { error: 'JSON 요청만 사용할 수 있습니다.' });
     return;
   }
@@ -199,13 +157,34 @@ async function handleApi(req, res, pathname) {
     sendJson(res, error.status || 400, { error: error.message });
     return;
   }
-  const text = input?.text;
   const mode = input?.mode;
-  if (typeof text !== 'string' || !text.trim() || text.length > 3000 || !['mistake', 'feedback'].includes(mode)) {
-    sendJson(res, 400, { error: '경험을 3000자 이내로 입력하고 유형을 선택해 주세요.' });
+  if (!['mistake', 'feedback'].includes(mode)) {
+    sendJson(res, 400, { error: '실수 또는 지적받은 상황을 선택해 주세요.' });
     return;
   }
-  if (!process.env.OPENAI_API_KEY) {
+  if (pathname === '/api/organize' &&
+      (typeof input?.text !== 'string' || !input.text.trim() || input.text.length > 3000)) {
+    sendJson(res, 400, { error: '경험을 3000자 이내로 입력해 주세요.' });
+    return;
+  }
+  if (pathname === '/api/chat-turn') {
+    const turns = input?.turns;
+    const track = input?.preferredTrack;
+    const validTurns = Array.isArray(turns) && turns.length <= 12 &&
+      turns.every((turn) => turn && ['assistant', 'user'].includes(turn.role) &&
+        typeof turn.content === 'string' && turn.content.trim() && turn.content.length <= 1000) &&
+      turns.filter((turn) => turn.role === 'user').length <= 6 &&
+      turns.reduce((total, turn) => total + turn.content.length, 0) <= 7000;
+    if (!validTurns || (track != null && !['feelings', 'tasks'].includes(track))) {
+      sendJson(res, 400, { error: '대화 내용을 확인해 주세요. 답변은 최대 6번까지 입력할 수 있습니다.' });
+      return;
+    }
+  }
+  if (input.consent !== true) {
+    sendJson(res, 400, { code: 'consent_required', error: 'Claude로 입력 내용을 보내는 데 동의해 주세요.' });
+    return;
+  }
+  if (!getAiConfig().apiKey) {
     sendJson(res, 503, { error: 'AI 기능이 설정되지 않았습니다. 직접 입력을 계속할 수 있습니다.' });
     return;
   }
@@ -214,10 +193,14 @@ async function handleApi(req, res, pathname) {
     return;
   }
   try {
-    const suggestions = await organize(text.trim(), mode);
-    sendJson(res, 200, { suggestions });
-  } catch {
-    sendJson(res, 502, { error: 'AI 제안을 불러오지 못했습니다. 직접 입력해 주세요.' });
+    if (pathname === '/api/chat-turn') {
+      sendJson(res, 200, await chatTurn(mode, input.preferredTrack || null, input.turns));
+    } else {
+      sendJson(res, 200, await organize(input.text.trim(), mode));
+    }
+  } catch (error) {
+    const failure = publicAiError(error);
+    sendJson(res, failure.status, { code: failure.code, error: failure.message });
   }
 }
 
@@ -241,15 +224,18 @@ function serveStatic(req, res, pathname) {
     res.end();
     return;
   }
-  const file = existsSync(requestedFile) && statSync(requestedFile).isFile() ? requestedFile : resolve(distRoot, 'index.html');
-  if (!existsSync(file)) {
+  const requestedExists = existsSync(requestedFile) && statSync(requestedFile).isFile();
+  const file = requestedExists ? requestedFile : extname(path) ? null : resolve(distRoot, 'index.html');
+  if (!file || !existsSync(file)) {
     res.writeHead(404);
-    res.end('Build the app first with npm run build.');
+    res.end('Not found.');
     return;
   }
   res.writeHead(200, {
+    ...securityHeaders,
+    'Content-Security-Policy': contentSecurityPolicy,
     'Content-Type': mimeTypes[extname(file)] || 'application/octet-stream',
-    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': file.endsWith('index.html') ? 'no-cache' : path.startsWith('/assets/') && /-[A-Za-z0-9_-]{8,}\./.test(path) ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
   });
   if (req.method === 'HEAD') {
     res.end();
@@ -287,6 +273,6 @@ if (dev) {
 }
 
 server.listen(port, host, () => {
-  console.log('다음장 서버: http://' + host + ':' + port);
-  console.log('AI 보조: ' + (process.env.OPENAI_API_KEY ? '설정됨' : '키 없음 (직접 입력 가능)'));
+  console.log('메이데이 서버: http://' + host + ':' + server.address().port);
+  console.log('AI 보조: ' + (getAiConfig().apiKey ? 'Claude 설정됨 · 실제 연결은 npm run ai:check로 확인' : '키 없음 (직접 입력 가능)'));
 });

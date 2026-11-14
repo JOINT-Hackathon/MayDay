@@ -1,0 +1,28 @@
+.pastel-cursor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: 360px;
+  height: 360px;
+  border-radius: 50%;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+  background: radial-gradient(circle closest-side,
+    rgb(194 239 157 / .16) 0%,
+    rgb(196 238 162 / .12) 20%,
+    rgb(198 236 169 / .06) 42%,
+    rgb(202 234 179 / .025) 64%,
+    rgb(204 232 185 / .007) 82%,
+    rgb(204 232 185 / .001) 94%,
+    rgb(204 232 185 / 0) 100%);
+  mix-blend-mode: screen;
+  transition: opacity 220ms ease-out;
+}
+
+.pastel-cursor[data-visible='true'] { opacity: 1; }
+
+@media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .pastel-cursor { display: none; }
+}
