@@ -9,7 +9,7 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: var(--dis
 h1 { max-width: none; font-size: var(--text-display); } h2 { max-width: none; font-size: var(--text-section); } h3 { max-width: none; font-size: var(--text-title); line-height: 1.2; }
 .lead { font-size: var(--text-lead); line-height: 1.45; max-width: 52ch; }
 p { margin: 0; text-wrap: pretty; }
-p, li { overflow-wrap: anywhere; }
+p, li { overflow-wrap: anywhere; word-break: keep-all; }
 img, video { max-width: 100%; height: auto; display: block; }
 svg { display: block; }
 [hidden] { display: none !important; }

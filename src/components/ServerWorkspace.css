@@ -21,3 +21,9 @@
 .server-empty { color: var(--color-muted); }
 .server-limitations summary { cursor: pointer; font-weight: 600; }
 @media (max-width: 760px) { .server-grid { grid-template-columns: 1fr; gap: 0; } .server-card { padding: 18px; } .server-card-heading { flex-wrap: wrap; }  }
+.server-checkbox { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.server-card .server-checkbox input { width: 20px; min-height: 20px; flex: 0 0 20px; }
+.server-card details { padding: 12px 0; }
+.server-card summary { cursor: pointer; font-weight: 600; }
+.server-card button:not([class]), .server-disclosure button { min-height: 44px; border: 1px solid var(--color-rule); border-radius: 12px; padding: 8px 12px; background: var(--surface-control); color: var(--color-ink); box-shadow: var(--shadow-control); cursor: pointer; font: inherit; }
+.server-inline { flex-wrap: wrap; }

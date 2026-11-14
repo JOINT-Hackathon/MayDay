@@ -12,7 +12,9 @@
     "check": "npm run test && npm run build && node scripts/smoke.mjs",
     "ai:check": "node scripts/check-claude.mjs",
     "backend:check": "node scripts/check-team5.mjs",
-    "demo": "npm run build && node server.mjs"
+    "demo": "npm run build && node server.mjs",
+    "backend:build": "bash backend/gradlew -p backend test bootJar",
+    "backend:start": "node scripts/start-backend.mjs"
   },
   "dependencies": {
     "react": "^19.3.1",
