@@ -50,6 +50,6 @@ export default function AnalysisAddons({ record, onToggleStep, addon, addonVisib
         </div>}
       </section>;
     })}
-    <button className="button-primary track-cta" type="button" onClick={onSaveChecklist}><Icon name="shield" variant="clay" size={28} /> 체크리스트에 담기</button>
+    <button className="button-primary track-cta" type="button" onClick={onSaveChecklist}><Icon name="shield" size={20} /> 체크리스트에 담기</button>
   </div>;
 }

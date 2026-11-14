@@ -2,7 +2,7 @@ import { useState } from 'react';
 import './ClayIcon.css';
 
 const clayAssets = Object.fromEntries(
-  ['zap', 'archive', 'mail', 'shield', 'heart'].map((name) => [name, `/icons/clay-v1/${name}.webp`]),
+  ['zap', 'archive', 'mail', 'shield', 'heart'].map((name) => [name, `/icons/clay-v2/${name}.webp`]),
 );
 
 const paths = {

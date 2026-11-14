@@ -1,6 +1,6 @@
 # 메이데이 배포 가이드
 
-이 구성은 화면과 같은 출처의 Node API를 한 프로세스에서 제공합니다. 기록은 각 사용자의 브라우저에만 저장됩니다. 계정, 기기 간 동기화, 서버 백업은 없습니다.
+화면과 Node API, Spring 백엔드를 한 Docker 컨테이너에서 실행합니다. 브라우저 기록과 로그인 후 PostgreSQL에 저장한 기록은 별도이며, 클라우드 DB는 로컬 파일 DB로 자동 대체하지 않습니다.
 
 ## 배포 전 확인
 
@@ -14,9 +14,19 @@
 
 ### Render 무료 배포
 
-루트 `render.yaml`에 무료 Docker 웹 서비스 설정을 준비했습니다. Render에서 Web Service를 만들고 배포 브랜치를 선택한 뒤 Docker 런타임, Singapore 리전, **Free ($0/month)** 인스턴스, 헬스 체크 `/api/health`를 지정합니다. 기존 Dockerfile이 프런트엔드와 Node API를 함께 빌드·실행합니다. 유료 디스크나 데이터베이스는 추가하지 않습니다.
+2026-11-14 배포 완료: https://mayday-pzhh.onrender.com
 
-무료 서비스는 15분 동안 요청이 없으면 중지되며 다음 접속 때 시작 대기 시간이 생깁니다. 서버 파일은 영구 저장소가 아닙니다. 로컬 `.env`는 업로드하지 않으며, Claude 호출 비용은 무료 호스팅과 별개입니다. TEAM5 Spring 서버는 이 Node 이미지에 포함되지 않습니다.
+- 서비스: `srv-dbrv27mi0phs73bl7fdg`, Singapore, Free ($0/month)
+- 배포 브랜치: `codex/render-free-deploy`
+- 자동 배포: Off. 코드 변경 후 Render에서 수동 배포합니다.
+- 통합 배포 전 검증: 테스트 17개·빌드·스모크 통과. H2와 PostgreSQL에서 로그인·사용자 격리·CRUD·재시작 후 보존 검증.
+- Claude 키는 Render 환경 변수에만 저장합니다. Spring은 외부 공개 포트 없이 Node 뒤의 `127.0.0.1:8080`에서 실행합니다.
+- 무료 PostgreSQL: `mayday-db`, 만료일 **2026-12-14**. 만료 전에 데이터를 내보내고 다른 DB로 이전해야 합니다. 자동 백업이 제공되지 않습니다.
+- 로컬 작업 파일을 별도 복사본에서 배포했으므로 작업 폴더의 브랜치는 변경하지 않았습니다.
+
+루트 `render.yaml`에 무료 Docker 웹 서비스 설정을 준비했습니다. Render에서 Web Service를 만들고 배포 브랜치를 선택한 뒤 Docker 런타임, Singapore 리전, **Free ($0/month)** 인스턴스, 헬스 체크 `/api/health`를 지정합니다. Dockerfile이 프런트엔드·Node API·Spring을 함께 빌드·실행합니다. 유료 디스크나 데이터베이스는 추가하지 않습니다.
+
+무료 서비스는 15분 동안 요청이 없으면 중지되며 다음 접속 때 시작 대기 시간이 생깁니다. 서버 파일은 영구 저장소가 아닙니다. 로컬 `.env`는 업로드하지 않으며, Claude 호출 비용은 무료 호스팅과 별개입니다. `/api/health`는 화면과 Spring의 준비 상태를 함께 확인합니다. Java 또는 Node가 종료되면 나머지 프로세스도 종료해 플랫폼이 재시작하도록 합니다.
 
 공식 안내: https://render.com/docs/free
 
@@ -24,7 +34,7 @@
 
 ```bash
 docker build -t mayday-mvp .
-docker run --rm -p 4173:4173 mayday-mvp
+docker run --rm --env-file .env.cloud -p 4173:4173 mayday-mvp
 ```
 
 이후 `http://127.0.0.1:4173`에서 수동 입력·저장을 확인합니다. Docker 호스팅에서는 이 저장소의 `Dockerfile`을 빌드 대상으로 지정하고 컨테이너 포트를 4173으로 연결합니다. 플랫폼이 `PORT`를 주입하면 서버와 헬스 체크는 그 값을 사용합니다.
@@ -41,18 +51,17 @@ HOST=0.0.0.0 PORT=4173 npm start
 
 ## 배포 직후 점검
 
-### Google Cloud Run
+### 클라우드 필수 환경 변수
 
-프로젝트에 활성 결제 계정이 연결되어 있어야 합니다. `.gcloudignore`는 Docker 빌드에 필요한 파일만 업로드하며 로컬 `.env`는 제외합니다.
+- `MAYDAY_DB_URL`: `jdbc:postgresql://<internal-host>:5432/<database>`
+- `MAYDAY_DB_USER`, `MAYDAY_DB_PASSWORD`: DB 연결 자격 증명
+- `MAYDAY_DB_SCHEMA=schema-postgresql.sql`
+- `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`: 서버 전용 AI 설정
+- `AI_DAILY_LIMIT=100`: 프로세스당 일일 호출 시도 제한, 결제 금액 한도가 아님
 
-```bash
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project=project-b032d384-ee0f-492e-b5c
-gcloud run deploy mayday --source=. --project=project-b032d384-ee0f-492e-b5c --region=asia-northeast3 --allow-unauthenticated --port=4173 --memory=512Mi --cpu=1 --min-instances=0 --max-instances=1 --set-env-vars=HOST=0.0.0.0,NODE_ENV=production --quiet
-```
+Docker 기본 설정은 `COOKIE_SECURE=true`, `REQUIRE_BACKEND=true`입니다. 로컬 HTTP로 컨테이너를 검증할 때만 `COOKIE_SECURE=false`를 지정합니다. `.env.cloud`는 저장소에 올리지 않습니다. 기존 로컬 H2 DB는 이 배포 과정에서 복사하거나 변경하지 않습니다.
 
-출력된 서비스 URL의 `/api/health`와 `/api/status`를 확인합니다. 최소 인스턴스 0은 유휴 비용을 줄이지만 무료를 보장하지 않으며 빌드·이미지 저장·요청 사용량에 따라 비용이 발생할 수 있습니다.
-
-Claude 키는 Secret Manager에 보관하고 Cloud Run의 비밀 참조로 연결합니다. 로컬 키는 자동으로 업로드되지 않습니다. TEAM5 서버는 별도로 배포한 후 `TEAM5_BACKEND_URL`을 해당 서버의 origin으로 설정해야 합니다. Cloud Run의 `127.0.0.1:8080`은 개발자 컴퓨터의 Spring 서버에 연결되지 않습니다.
+검증 명령은 `npm run check`, `npm run backend:build`, `npm run backend:check`입니다. 별도의 빈 PostgreSQL 테스트 DB에는 `TEST_DATABASE_URL`, `TEST_DATABASE_USER`, `TEST_DATABASE_PASSWORD`, `MAYDAY_DB_SCHEMA=schema-postgresql.sql`을 지정해 `npm run backend:check`를 실행합니다. 이 검사는 테스트 계정과 데이터를 만들므로 운영 DB에 실행하지 않습니다.
 
 ### 확인 항목
 

@@ -68,7 +68,8 @@ export async function chatTurn(mode, preferredTrack, turns) {
     'unknown에는 아직 확인되지 않은 원인, 영향, 기준 등 가장 중요한 것을 적는다. improvement와 followUp은 사실을 단정하지 않는 구체적인 다음 행동이나 확인 질문으로 제안할 수 있다.',
     'checklist에는 근거가 있으면 재발 방지 행동을, 근거가 없으면 기준이나 예시를 확인하는 행동을 제안한다.',
     '사용자 답변이 충분하면 done을 true로 하고 question을 빈 문자열로 둔다. 부족하면 done을 false로 하고 짧은 질문 하나를 둔다.',
-    '사용자 답변이 6개에 도달하면 반드시 done을 true로 한다. 답하지 않은 항목은 빈 문자열로 남긴다.',
+    '횟수만으로 종료하지 마라. 막연한 답변에는 업무 대상, 실제 문구, 언제 누구에게 무엇을 할지 중 부족한 한 가지를 예시와 함께 다시 묻는다. 모르겠다고 하면 사실을 만들어내지 말고 확인할 대상과 첫 행동을 함께 정한다. 감정 답변은 강요하지 않는다.',
+    '완료하려면 facts, unknown, improvement, followUp, checklist가 있어야 한다. 개선 행동은 대상과 실행 시점, 후속 보고는 확인된 사실과 요청할 내용, 체크리스트는 확인 대상을 구체화한다.',
     '각 summary 값은 한국어 한두 문장으로 짧게 쓴다. 개인이나 회사를 비난하지 않고, 괴롭힘·의료·법률 판정을 하지 않는다.',
   ].join(' ');
   const { data: parsed, meta } = await structuredResponse(
@@ -83,14 +84,22 @@ export async function chatTurn(mode, preferredTrack, turns) {
     throw new Error('invalid_response');
   }
   const answers = turns.filter((turn) => turn.role === 'user').length;
-  const done = answers >= 6 || (answers > 0 && parsed.done);
+  const missing = ['facts', 'unknown', 'improvement', 'followUp', 'checklist'].find((field) => !parsed.summary[field].trim());
+  const done = answers > 0 && parsed.done && !missing;
+  const missingQuestions = {
+    facts: '직접 확인한 업무 결과나 실제로 들은 말을 한 가지 알려주세요.',
+    unknown: '아직 확인해야 할 점은 무엇인가요? 모두 확인했다면 그렇게 알려주세요.',
+    improvement: '언제, 어떤 자료나 대상을 가지고 첫 행동을 할 수 있을까요?',
+    followUp: '누구에게 확인한 사실과 어떤 요청을 전달할까요? 보고가 필요 없다면 이유를 알려주세요.',
+    checklist: '다음 업무의 어느 시점에 무엇을 확인하면 같은 상황을 예방할 수 있을까요?',
+  };
   const fallbackQuestion = mode === 'mistake'
     ? '직접 확인한 일과 아직 확인되지 않은 일을 알려주실 수 있나요?'
     : '직접 들은 말과 아직 확인하고 싶은 점을 알려주실 수 있나요?';
   return {
     done,
     meta,
-    question: done ? '' : (parsed.question.trim().slice(0, 300) || fallbackQuestion),
+    question: done ? '' : (missingQuestions[missing] && parsed.done ? missingQuestions[missing] : parsed.question.trim().slice(0, 300) || fallbackQuestion),
     summary: Object.fromEntries(chatFields.map((field) => [field, parsed.summary[field].trim().slice(0, 500)])),
   };
 }

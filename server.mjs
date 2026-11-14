@@ -112,7 +112,13 @@ async function handleApi(req, res, pathname) {
     return;
   }
   if (pathname === '/api/health' && req.method === 'GET') {
-    const ready = dev || existsSync(resolve(distRoot, 'index.html'));
+    let ready = dev || existsSync(resolve(distRoot, 'index.html'));
+    if (ready && process.env.REQUIRE_BACKEND === 'true') {
+      try {
+        const response = await fetch(new URL('/api/auth/me', process.env.TEAM5_BACKEND_URL), { signal: AbortSignal.timeout(2000) });
+        ready = response.status === 401;
+      } catch { ready = false; }
+    }
     sendJson(res, ready ? 200 : 503, { ok: ready });
     return;
   }
@@ -170,18 +176,18 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/chat-turn') {
     const turns = input?.turns;
     const track = input?.preferredTrack;
-    const validTurns = Array.isArray(turns) && turns.length <= 12 &&
+    const validTurns = Array.isArray(turns) && turns.length <= 80 &&
       turns.every((turn) => turn && ['assistant', 'user'].includes(turn.role) &&
         typeof turn.content === 'string' && turn.content.trim() && turn.content.length <= 1000) &&
-      turns.filter((turn) => turn.role === 'user').length <= 6 &&
-      turns.reduce((total, turn) => total + turn.content.length, 0) <= 7000;
+      turns.filter((turn) => turn.role === 'user').length <= 40 &&
+      turns.reduce((total, turn) => total + turn.content.length, 0) <= 60000;
     if (!validTurns || (track != null && !['feelings', 'tasks'].includes(track))) {
       sendJson(res, 400, { error: '대화 내용을 확인해 주세요. 답변은 최대 6번까지 입력할 수 있습니다.' });
       return;
     }
   }
   if (input.consent !== true) {
-    sendJson(res, 400, { code: 'consent_required', error: 'Claude로 입력 내용을 보내는 데 동의해 주세요.' });
+    sendJson(res, 400, { code: 'consent_required', error: 'AI로 입력 내용을 보내는 데 동의해 주세요.' });
     return;
   }
   if (!getAiConfig().apiKey) {

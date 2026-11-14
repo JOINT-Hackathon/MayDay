@@ -1,0 +1,28 @@
+server:
+  address: ${BACKEND_HOST:127.0.0.1}
+  port: ${BACKEND_PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+spring:
+  application:
+    name: MayDay
+  # shortcut: file DB supports one backend process; use a managed DB for multiple instances.
+  datasource:
+    url: ${MAYDAY_DB_URL:jdbc:h2:file:./data/mayday;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE}
+    username: ${MAYDAY_DB_USER:sa}
+    password: ${MAYDAY_DB_PASSWORD:}
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:${MAYDAY_DB_SCHEMA:schema.sql}
+  h2:
+    console:
+      enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    show-sql: false
+app:
+  cookie-secure: ${COOKIE_SECURE:false}

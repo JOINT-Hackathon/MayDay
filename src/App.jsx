@@ -1,3 +1,4 @@
+import { buildBlackboxReport, buildRecoveryEmail } from './reportDrafts.js';
 import { useEffect, useRef, useState } from 'react';
 import AnalysisAddons from './components/AnalysisAddons.jsx';
 import Icon from './components/Icon.jsx';
@@ -69,44 +70,6 @@ function Field({ name, label, value, onChange, help, placeholder, rows = 3, requ
       {error && <p className="field-error" id={id + '-error'}>{error}</p>}
     </div>
   );
-}
-
-function buildBlackboxReport(record) {
-  const why = record.causeStatus === 'confirmed' && record.cause
-    ? '확인된 원인: ' + record.cause
-    : record.causeStatus === 'hypothesis' && record.cause
-      ? '추정한 원인(추가 확인 필요): ' + record.cause
-      : '기록하지 않음';
-  return [
-    '블랙박스 보고서 · ' + (record.mode === 'mistake' ? '실수' : '지적') + ' 경험',
-    '',
-    '1. 무슨 일: ' + (record.facts || '직접 확인한 내용 작성 전'),
-    '2. 왜: ' + why,
-    '3. 영향: ' + (record.impact || '기록하지 않음'),
-    '4. 조치: ' + (record.improvement || '기록하지 않음'),
-    '5. 재발 방지: ' + (record.checklist || '체크리스트 작성 전'),
-    '',
-    '아직 확인할 일: ' + (record.unknown || '기록하지 않음'),
-    '후속 보고 또는 질문: ' + (record.followUp || '기록하지 않음'),
-  ].join('\n');
-}
-
-function buildRecoveryEmail(record, tone = 'formal') {
-  const casual = tone === 'casual';
-  const completed = Array.isArray(record.actionChecked) && record.actionChecked.includes('improvement');
-  return [
-    '제목: ' + (record.mode === 'mistake' ? '업무 내용 공유 초안' : '피드백 내용 공유 초안'),
-    '',
-    casual ? '안녕하세요. 진행 상황을 공유드립니다.' : '안녕하세요.',
-    '기록한 사실: ' + record.facts,
-    ...(record.impact ? ['영향: ' + record.impact] : []),
-    ...(record.improvement ? [(completed ? '확인한 조치: ' : '조치 계획: ') + record.improvement] : []),
-    ...(record.followUp ? ['후속 보고 또는 질문: ' + record.followUp] : []),
-    ...(record.unknown ? ['아직 확인할 사항: ' + record.unknown] : []),
-    '다음 업무에서 확인할 항목: ' + record.checklist,
-    '',
-    casual ? '확인 후 다시 공유드리겠습니다.' : '감사합니다.',
-  ].join('\n');
 }
 
 export default function App() {
@@ -325,10 +288,12 @@ export default function App() {
     window.scrollTo({ top: 0 });
   }
 
-  function completeChat(answers) {
+  function completeChat(answers, preferredTrack) {
     setDraft((current) => ({ ...current, ...answers }));
     setPage('form');
-    window.scrollTo({ top: 0 });
+    window.requestAnimationFrame(() => {
+      document.getElementById(preferredTrack === 'tasks' ? 'tasks-form-title' : 'feelings-form-title')?.scrollIntoView({ block: 'start' });
+    });
   }
 
   async function askAi() {
@@ -378,7 +343,7 @@ export default function App() {
       }));
       setAiNotice('AI가 빈 칸에 초안을 넣었습니다. 확인한 사실과 추측을 직접 검토하고 고쳐 주세요.');
     } catch (error) {
-      if (!controller.signal.aborted || controller.signal.reason === 'timeout') setAiError((controller.signal.reason === 'timeout' ? 'Claude 응답이 지연되고 있어요.' : error instanceof Error ? error.message : 'AI 요청에 실패했습니다.') + ' 작성한 내용은 그대로 남아 있으며 직접 입력할 수 있습니다.');
+      if (!controller.signal.aborted || controller.signal.reason === 'timeout') setAiError((controller.signal.reason === 'timeout' ? 'AI 응답이 지연되고 있어요.' : error instanceof Error ? error.message : 'AI 요청에 실패했습니다.') + ' 작성한 내용은 그대로 남아 있으며 직접 입력할 수 있습니다.');
     } finally {
       window.clearTimeout(timeout);
       if (aiAbortRef.current === controller) {
@@ -637,7 +602,7 @@ export default function App() {
             <button type="button" className={page === 'examples' ? 'nav-link is-current' : 'nav-link'} aria-current={page === 'examples' ? 'page' : undefined} onClick={() => setPage('examples')}><Icon name="layers" />실패 라이브러리</button>
             <button type="button" className={page === 'library' ? 'nav-link is-current' : 'nav-link'} aria-current={page === 'library' ? 'page' : undefined} onClick={() => setPage('library')}><Icon name="clock" />내 기록</button>
           </nav>
-          <div className="header-actions"><button className="header-checklist" type="button" aria-haspopup="dialog" aria-expanded={checklistPopupOpen} onClick={(event) => openChecklistPopup(null, event)}><Icon name="shield" variant="clay" size={28} />내 체크리스트{checklistPopupOpen && <span aria-hidden="true">▴</span>}</button><img className="header-avatar" src="/mayday-day.png" alt="데이 캐릭터" width="36" height="36" /></div>
+          <div className="header-actions"><button className="header-checklist" type="button" aria-haspopup="dialog" aria-expanded={checklistPopupOpen} onClick={(event) => openChecklistPopup(null, event)}><Icon name="shield" variant="clay" size={24} />내 체크리스트{checklistPopupOpen && <span aria-hidden="true">▴</span>}</button><img className="header-avatar" src="/mayday-day.png" alt="데이 캐릭터" width="36" height="36" /></div>
         </div>
       </header>
 
@@ -655,16 +620,16 @@ export default function App() {
                 <p>편하게 털어놔요. 마음 정리도, 지금 할 일도 메이가 같이 챙길게요.</p>
               </div>
 
-              <form className="home-composer" aria-label="오늘의 경험 정리" onSubmit={(event) => { event.preventDefault(); beginFromHome(); }} aria-busy={aiLoading}>
+              <form className="home-composer" aria-label="오늘의 경험 정리" onSubmit={(event) => { event.preventDefault(); if (!draft.rawText.trim()) { setHomeError('상황을 한 문장으로 적어 주세요.'); return; } start(entryMode, draft.rawText, 'chat'); }} aria-busy={aiLoading}>
                 <label className="visually-hidden" htmlFor="home-raw-text">오늘 회사에서 있었던 일</label>
                 <textarea id="home-raw-text" value={draft.rawText} onChange={(event) => updateDraft('rawText', event.target.value)} maxLength={500} rows={4} disabled={aiLoading} aria-invalid={Boolean(homeError)} aria-describedby={homeError ? 'home-error' : 'home-input-help'} placeholder="예) 거래처에 견적서 옛날 버전 보냄… 팀장님은 아직 모르심" />
                 <div className="home-composer-bottom"><span className="input-count">{draft.rawText.length > 0 && `${draft.rawText.length} / 500`}</span><button className="button-primary" type="submit" disabled={aiLoading}>{aiLoading ? <><span className="loading-spinner" /> 정리하는 중…</> : <><Icon name="send" /> 메이데이 보내기</>}</button></div>
                 {homeError && <p className="field-error" id="home-error" role="alert">{homeError}</p>}
               </form>
-              {aiLoading && <div className="ai-progress" role="status"><span>Claude가 사실과 해석을 나누고 있어요 · {aiElapsed}초{aiElapsed >= 12 ? ' · 연결이 늦어지면 기본 정리를 이용하세요' : ''}</span><button type="button" className="text-button" onClick={() => beginFromHome(true)}>기본 정리로 계속</button></div>}
+              {aiLoading && <div className="ai-progress" role="status"><span>AI가 사실과 해석을 나누고 있어요 · {aiElapsed}초{aiElapsed >= 12 ? ' · 연결이 늦어지면 기본 정리를 이용하세요' : ''}</span><button type="button" className="text-button" onClick={() => beginFromHome(true)}>기본 정리로 계속</button></div>}
               {aiError && <div className="home-error alert" role="alert"><p>{aiError}</p><button type="button" className="button-secondary" onClick={() => beginFromHome(true)}>기본 정리로 계속</button></div>}
               <div className="home-examples"><span>이런 일도 괜찮아요</span>{HOME_EXAMPLES.map((example) => <button key={example.label} type="button" disabled={aiLoading} onClick={() => { setEntryMode(example.mode); updateDraft('rawText', example.text); document.getElementById('home-raw-text')?.focus(); }}>{example.label}</button>)}</div>
-              <details className="home-input-options"><summary>직접 정리 · AI 설정</summary><div className="home-mode-switch" role="group" aria-label="경험 유형"><button type="button" aria-pressed={entryMode === 'mistake'} disabled={aiLoading} onClick={() => setEntryMode('mistake')}>실수했어요</button><button type="button" aria-pressed={entryMode === 'feedback'} disabled={aiLoading} onClick={() => setEntryMode('feedback')}>피드백을 받았어요</button></div><div className="home-input-help" id="home-input-help">{aiAvailable === true ? <label className="consent-label"><input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} disabled={aiLoading} />Claude로 초안 만들기 · Anthropic에 이 문장을 보내는 데 동의합니다</label> : <span>지금은 기본 정리 모드예요. 입력한 내용은 외부로 보내지 않아요.</span>}<button className="text-button" type="button" disabled={aiLoading} onClick={() => start(entryMode, draft.rawText, 'form')}>직접 정리하기</button></div></details>
+              <details className="home-input-options"><summary>직접 정리 · AI 설정</summary><div className="home-mode-switch" role="group" aria-label="경험 유형"><button type="button" aria-pressed={entryMode === 'mistake'} disabled={aiLoading} onClick={() => setEntryMode('mistake')}>실수했어요</button><button type="button" aria-pressed={entryMode === 'feedback'} disabled={aiLoading} onClick={() => setEntryMode('feedback')}>피드백을 받았어요</button></div><div className="home-input-help" id="home-input-help">{aiAvailable === true ? <label className="consent-label"><input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} disabled={aiLoading} />AI로 초안 만들기 · Anthropic에 이 문장을 보내는 데 동의합니다</label> : <span>지금은 기본 정리 모드예요. 입력한 내용은 외부로 보내지 않아요.</span>}<button className="text-button" type="button" disabled={aiLoading} onClick={() => start(entryMode, draft.rawText, 'form')}>직접 정리하기</button></div></details>
               <div className="home-recent"><div className="home-recent-heading"><h2>지난번 일들</h2><span>{records.items.length ? <button className="text-button" type="button" onClick={() => setPage('library')}>전체 보기 <Icon name="arrow" /></button> : '아직 기록이 없어요 · 예시를 먼저 살펴보세요'}</span></div>
                 <div className="home-recent-grid">{records.items.length ? records.items.slice(0, 3).map((item) => <button className="home-recent-card" type="button" key={item.id} onClick={() => openRecord(item)}><small>{new Date(item.createdAt).toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' })}</small><strong>{item.facts}</strong><span>{item.usedAt ? '업무에 적용함' : '내 기록에 저장됨'}</span></button>) : DEMO_RECORDS.map((example) => <button className="home-recent-card" type="button" key={example.title} onClick={() => openDemo(example)}><small>{example.date} · 시연 예시</small><strong>{example.title}</strong><span>{example.status}</span></button>)}</div>
               </div>
@@ -686,7 +651,7 @@ export default function App() {
               <section className="intake-panel" aria-labelledby="intake-title">
                 <div className="intake-heading"><div><p className="eyebrow">선택 · AI 작성 보조</p><h2 id="intake-title">처음 적은 상황</h2><p>아래에 정리한 내용만 저장돼요. AI를 쓰지 않아도 직접 채울 수 있어요.</p></div><div className="form-mode-switch" role="group" aria-label="경험 유형"><button type="button" aria-pressed={entryMode === 'mistake'} onClick={() => setEntryMode('mistake')}>실수</button><button type="button" aria-pressed={entryMode === 'feedback'} onClick={() => setEntryMode('feedback')}>지적</button></div></div>
                 <Field name="rawText" label="상황을 한두 문장으로 적어 주세요" value={draft.rawText} onChange={updateDraft} help="AI 버튼을 누를 때 이 문장만 외부 AI 서비스로 전송합니다." placeholder={entryMode === 'mistake' ? '예: 공유한 표의 합계가 원본과 달랐어요. 누가 사용했는지는 모릅니다.' : '예: 다음 자료는 더 확인해 달라는 말을 들었어요. 어떤 항목인지는 모르겠습니다.'} rows={3} />
-                <div className="intake-ai-row"><p className="field-help">회사명·실명·고객 정보·문서 원문은 입력하지 마세요.</p>{aiAvailable === false ? <p className="notice" role="status">지금은 AI 초안을 사용할 수 없어요. 아래에서 직접 정리해 주세요.</p> : <><label className="consent-label"><input type="checkbox" checked={aiConsent} onChange={(event) => { setAiConsent(event.target.checked); setAiError(''); }} />이 문장을 Anthropic의 Claude로 전송하는 데 동의합니다.</label><button className="button-secondary ai-button" type="button" onClick={askAi} disabled={aiLoading || aiAvailable !== true}>{aiLoading ? '초안 만드는 중…' : aiAvailable === null ? 'AI 확인 중…' : 'AI로 빈칸 채우기'}</button></>}</div>
+                <div className="intake-ai-row"><p className="field-help">회사명·실명·고객 정보·문서 원문은 입력하지 마세요.</p>{aiAvailable === false ? <p className="notice" role="status">지금은 AI 초안을 사용할 수 없어요. 아래에서 직접 정리해 주세요.</p> : <><label className="consent-label"><input type="checkbox" checked={aiConsent} onChange={(event) => { setAiConsent(event.target.checked); setAiError(''); }} />이 문장을 Anthropic의 AI로 전송하는 데 동의합니다.</label><button className="button-secondary ai-button" type="button" onClick={askAi} disabled={aiLoading || aiAvailable !== true}>{aiLoading ? '초안 만드는 중…' : aiAvailable === null ? 'AI 확인 중…' : 'AI로 빈칸 채우기'}</button></>}</div>
                 {aiError && <p className="alert" role="alert">{aiError}</p>}{aiNotice && <p className="notice" role="status">{aiNotice}</p>}
               </section>
 
@@ -718,7 +683,7 @@ export default function App() {
         {(page === 'review' || page === 'action') && selected && (
           <section className={`container workflow result-workflow${page === 'action' ? ' focused-action' : ''}`} aria-labelledby="review-title">
             {page === 'action' && <div className="track-page-tabs" role="group" aria-label="분석 트랙"><button type="button" onClick={() => setPage('review')}>마음 정리</button><button type="button" aria-pressed="true">지금 할 일</button></div>}
-            {page === 'action' ? <div className="source-strip action-overview"><strong>{selected.overview || selected.unknown || selected.checklist}</strong><p>{selected.followUp}<br />다음부터는 {selected.checklist}</p></div> : <div className="source-strip"><div><span className="source-label">{selected.source === 'ai' ? 'Claude가 정리한 경험' : '내가 쓴 글'}</span><p>{selected.facts ? `“${selected.facts}”` : '확인한 사실을 추가해 주세요.'}</p></div><button className="button-secondary" type="button" onClick={() => { updateDraft('rawText', selected.facts); setPage('home'); window.scrollTo({ top: 0 }); }}><Icon name="refresh" />다시 입력</button></div>}
+            {page === 'action' ? <div className="source-strip action-overview"><strong>{selected.overview || selected.unknown || selected.checklist}</strong><p>{selected.followUp}<br />다음부터는 {selected.checklist}</p></div> : <div className="source-strip"><div><span className="source-label">{selected.source === 'ai' ? 'AI가 정리한 경험' : '내가 쓴 글'}</span><p>{selected.facts ? `“${selected.facts}”` : '확인한 사실을 추가해 주세요.'}</p></div><button className="button-secondary" type="button" onClick={() => { updateDraft('rawText', selected.facts); setPage('home'); window.scrollTo({ top: 0 }); }}><Icon name="refresh" />다시 입력</button></div>}
             <div className="result-heading"><h1 id="review-title">{page === 'action' ? '메이가 더 도와줄게요' : '많이 놀랐죠? 하나씩 같이 정리해봐요'}</h1></div>
             {page === 'action' && <p className="action-intro">필요한 것만 켜보세요.</p>}<div className="result-track-grid">
               <article className="track-result-card emotion-result-card"><div className="track-panel-heading"><span className="track-icon track-icon-day"><img src="/mayday-day.png" alt="" /></span><div><h2>마음 정리</h2><p>일어난 일과 내 걱정을 나눠서 봐요</p></div></div>
@@ -726,7 +691,7 @@ export default function App() {
                 <div className="result-detail"><span>내 머릿속 걱정</span><p>{selected.interpretation ? `· “${selected.interpretation}”` : '아직 적지 않았어요. 떠오른 생각을 직접 정리해 보세요.'}</p></div>
                 <div className="result-detail"><span>지금 내 기분</span><p>{selected.feeling ? `· ${selected.feeling}` : '지금 느끼는 감정을 직접 적어 주세요.'}</p></div>
                 <div className="result-detail compassion-note"><span>메이가 해주고 싶은 말</span><p>· {selected.compassion || "이번 실수가 당신의 전부는 아니에요. 하나씩 같이 수습해봐요."}</p></div>
-                <button className="button-secondary track-cta" type="button" onClick={() => saveCurrent()} disabled={records.readError}><Icon name="heart" variant="clay" size={28} />마음 정리 저장</button>
+                <button className="button-secondary track-cta" type="button" onClick={() => saveCurrent()} disabled={records.readError}><Icon name="heart" variant="clay" size={24} />마음 정리 저장</button>
               </article>
               <article className="track-result-card task-result-card"><div className="track-panel-heading"><span className="track-icon track-icon-may"><img src="/mayday-hero.png" alt="" /></span><div><h2>지금 할 일</h2><p>{trackExpanded || page === 'action' ? '필요한 것만 켜서 써요' : '급한 것부터 차근차근 해봐요'}</p></div></div>
                 {trackExpanded || page === 'action' ? <AnalysisAddons key={selected.id} record={selected} onToggleStep={toggleActionStep} addon={addon} addonVisible={addonVisible} addonDraft={addonDraft} emailTone={emailTone} onToggleAddon={toggleAddon} onEditDraft={editAddonDraft} onToneChange={changeEmailTone} onCopy={copyAddon} onDownload={downloadAddon} onSaveChecklist={() => saveCurrent(true)} onSaveRecord={() => saveCurrent()} /> : <>
@@ -737,7 +702,7 @@ export default function App() {
                 </>}
               </article>
             </div>
-            <span className="analysis-source">{selected.source === 'demo' ? '시연 예시' : selected.source === 'ai' ? 'Claude 초안 · 사실을 확인한 후 사용해 주세요' : selected.source === 'local' ? '기본 정리 · 추천 행동은 확인 후 수정해 주세요' : '직접 정리한 기록'}</span><div className="result-bottom-actions"><button className="text-button" type="button" onClick={() => { setServerSeed(selected); setPage('server'); window.scrollTo({ top: 0 }); }}>이 경험을 서버에 저장하기</button><button className="text-button" type="button" onClick={() => { setDraft({ ...EMPTY_DRAFT, ...selected, rawText: selected.facts }); setEntryMode(selected.mode); setPage('form'); window.scrollTo({ top: 0 }); }}><Icon name="edit" />내용 직접 정리하기</button>{trackExpanded && <button className="text-button" type="button" onClick={() => { setPage(page === 'action' ? 'review' : 'action'); window.scrollTo({ top: 0 }); }}>{page === 'action' ? '두 트랙 함께 보기' : '지금 할 일 크게 보기'}<Icon name="arrow" /></button>}<button className="text-button" type="button" onClick={(event) => { if (saveCurrent(true)) openChecklistPopup(selected, event); }}><Icon name="shield" />재발 방지 체크리스트 확인</button>{!pendingRecord && <button className="text-button danger" type="button" onClick={() => deleteRecord(selected.id)}>기록 삭제</button>}</div>
+            <span className="analysis-source">{selected.source === 'demo' ? '시연 예시' : selected.source === 'ai' ? '사실을 확인한 후 사용해 주세요' : selected.source === 'local' ? '기본 정리 · 추천 행동은 확인 후 수정해 주세요' : '직접 정리한 기록'}</span><div className="result-bottom-actions"><button className="text-button" type="button" onClick={() => { setServerSeed(selected); setPage('server'); window.scrollTo({ top: 0 }); }}>이 경험을 서버에 저장하기</button><button className="text-button" type="button" onClick={() => { setDraft({ ...EMPTY_DRAFT, ...selected, rawText: selected.facts }); setEntryMode(selected.mode); setPage('form'); window.scrollTo({ top: 0 }); }}><Icon name="edit" />내용 직접 정리하기</button>{trackExpanded && <button className="text-button" type="button" onClick={() => { setPage(page === 'action' ? 'review' : 'action'); window.scrollTo({ top: 0 }); }}>{page === 'action' ? '두 트랙 함께 보기' : '지금 할 일 크게 보기'}<Icon name="arrow" /></button>}<button className="text-button" type="button" onClick={(event) => { if (saveCurrent(true)) openChecklistPopup(selected, event); }}><Icon name="shield" />재발 방지 체크리스트 확인</button>{!pendingRecord && <button className="text-button danger" type="button" onClick={() => deleteRecord(selected.id)}>기록 삭제</button>}</div>
             {selected.usedAt && <div className="panel stack outcome-panel"><h2>적용 결과</h2><p>이번 업무에서 체크리스트를 사용한 경험을 남겨 보세요.</p><textarea aria-label="적용 결과" value={outcomeText} onChange={(event) => setOutcomeText(event.target.value)} rows="3" maxLength="1200" /><button className="button-secondary" type="button" onClick={saveOutcome}>결과 저장하기</button></div>}
           </section>
         )}
@@ -766,7 +731,7 @@ export default function App() {
       </main>
       {checklistPopupOpen && (
         <dialog className="checklist-dialog" ref={checklistDialogRef} onClose={closeChecklistPopup} onKeyDown={handleChecklistKeys} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); if (event.target === event.currentTarget && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) event.currentTarget.close(); }} aria-labelledby="checklist-dialog-title" aria-describedby="checklist-dialog-description">
-          <div className="checklist-dialog-heading"><Icon name="shield" variant="clay" size={48} /><div><h2 id="checklist-dialog-title">내 체크리스트</h2><p id="checklist-dialog-description">일 시작하기 전에 한 번만 훑어봐요</p></div><button className="dialog-close" type="button" aria-label="체크리스트 닫기" onClick={() => checklistDialogRef.current?.close()}>×</button></div>
+          <div className="checklist-dialog-heading"><Icon name="shield" variant="clay" size={44} /><div><h2 id="checklist-dialog-title">내 체크리스트</h2><p id="checklist-dialog-description">일 시작하기 전에 한 번만 훑어봐요</p></div><button className="dialog-close" type="button" aria-label="체크리스트 닫기" onClick={() => checklistDialogRef.current?.close()}>×</button></div>
           <div className="popup-filters" role="group" aria-label="업무 종류 필터">{CHECKLIST_CONTEXTS.filter((context) => context.id !== 'other' || checklistState.items.some((item) => checklistContext(item) === 'other')).map((context) => <button key={context.id} type="button" aria-pressed={popupFilter === context.id} title="선택한 분류를 다시 누르면 전체 항목을 봐요" onClick={() => { setPopupFilter(popupFilter === context.id ? '전체' : context.id); setPopupCheckedIds([]); setPopupError(''); }}>#{context.label}</button>)}</div>
           <div className="popup-list">{popupItems.length ? popupItems.map((item, index) => (
             <div className="popup-checkitem" key={item.id} draggable={editingChecklistId !== item.id} onDragStart={() => { draggingChecklistIdRef.current = item.id; }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); moveChecklistItem(draggingChecklistIdRef.current, item.id); draggingChecklistIdRef.current = null; }} onDragEnd={() => { draggingChecklistIdRef.current = null; }}>
@@ -780,7 +745,7 @@ export default function App() {
           <div className="action-bar"><button className="button-secondary" type="button" onClick={() => { setNewChecklistType(popupFilter === '전체' ? 'mail' : popupFilter); setShowNewChecklistItem(true); }}>+ 직접 추가</button><button className="button-primary" type="button" onClick={confirmChecklistApplied} disabled={checklistState.readError}><Icon name="shield" />다 확인했어요</button></div>
         </dialog>
       )}
-      <footer className="site-footer"><div className="container footer-inner"><button className="text-button" type="button" onClick={() => { setServerSeed(null); setPage('server'); window.scrollTo({ top: 0 }); }}>서버 기록</button><img className="footer-wordmark" src="/mayday-wordmark.svg" alt="Mayday" /><p>사회초년생의 경험을 다음 행동으로 잇는 시연용 서비스 · 내 기록은 이 브라우저에 저장됩니다.</p></div></footer>
+      <footer className="site-footer"><div className="container footer-inner"><button className="text-button" type="button" onClick={() => { setServerSeed(null); setPage('server'); window.scrollTo({ top: 0 }); }}>서버 기록</button><img className="footer-wordmark" src="/mayday-wordmark.svg" alt="Mayday" /><p>사회초년생의 경험을 다음 행동으로 잇는 서비스 · 내 기록은 브라우저에, 서버 기록은 로그인한 계정에 저장됩니다.</p></div></footer>
     </>
   );
 }

@@ -25,8 +25,6 @@
   box-shadow: none;
 }
 
-.header-checklist .icon.clay-icon { width: 28px; height: 28px; }
-
 @media (max-width: 420px) {
   .feature-icon.feature-icon-clay { width: 44px; height: 44px; }
 }
