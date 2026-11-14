@@ -4,6 +4,7 @@ import { buildBlackboxReport, buildRecoveryEmail } from '../reportDrafts.js';
 import './ServerWorkspace.css';
 
 const DETAIL_FIELDS = {
+  emotionFocus: '마음에 남는 부분', emotionNeed: '지금 필요한 것', emotionClosing: '정리한 마음', compassion: '마음 정리 안내', overview: '업무 요약',
   interpretation: '내 해석', feeling: '감정', cause: '원인', impact: '영향', unknown: '확인할 일',
   improvement: '개선 행동', followUp: '후속 보고·질문', checklist: '다음 확인 행동', outcome: '업무 적용 결과',
 };
